@@ -49,3 +49,28 @@ Stage Summary:
 - Zero kerusakan: PHP syntax balanced, krouter flow tested end-to-end, tool call + streaming verified.
 - Commit email: 95106539+Yz776@users.noreply.github.com (GitHub-linked, Vercel deploy compatible).
 
+---
+Task ID: kfai-nextjs-v4
+Agent: main
+Task: Convert KFAI to Next.js so all agentic processing runs server-side.
+
+Work Log:
+- Initialized Next.js 16 + TypeScript + Tailwind 4 project at /home/z/my-project (via fullstack-dev skill).
+- Created src/lib/krouter.ts: krouter client (streaming callKrouterStream, model whitelist, system prompt, tool definitions).
+- Created src/lib/tools.ts: server-side tool implementations (web_search DuckDuckGo, calculator safe eval, datetime Intl, http_fetch, list_models, bash sandboxed with whitelist + Bun.spawn + 5s timeout).
+- Created src/app/api/chat/route.ts: SSE-streaming agentic loop. POST {messages, model} → server calls krouter with streaming, accumulates reasoning + content + tool_calls, executes tools server-side, feeds results back, repeats max 6 iterations. SSE events: start, iter_start, thinking, content, tool_call, tool_result, done, error, end.
+- Rewrote src/app/page.tsx: client component with chat UI. SSE reader renders thinking blocks (collapsible), tool cards (with running/done/error status), markdown final answer with streaming caret. Model selector, status pill, keyboard shortcuts.
+- Updated src/app/layout.tsx: Inter + JetBrains Mono fonts, KFAI metadata.
+- Rewrote src/app/globals.css: anti-slop aesthetic (near-black #0a0a0b, amber accent #f59e0b, no gradients/glows/blobs). JetBrains Mono for code/mono, Inter for body.
+- krouter API key stored in .env (KROUTER_BASE, KROUTER_KEY) — server-side only, never exposed to client.
+- Lint: 0 errors, 0 warnings (bun run lint clean).
+- Browser test (agent-browser): page renders, chat works, agentic loop runs server-side. Tested "List models" → model tried glob (rejected) → tried list_models → got 87 models → formatted with categories. Tested "Calculate 15²+3×7" → model gave step-by-step answer with bold result.
+- Zero errors, zero console issues.
+
+Stage Summary:
+- Architecture: Browser → /api/chat (Next.js API route) → krouter (server-side, TLS 1.3 works in Node.js runtime) → tool execution (server-side) → SSE stream back to browser.
+- API key: server-side only (environment variable), never in client JS bundle.
+- Agentic: full loop runs server-side, client only renders SSE events.
+- Files: src/lib/krouter.ts, src/lib/tools.ts, src/app/api/chat/route.ts, src/app/page.tsx, src/app/layout.tsx, src/app/globals.css, .env.
+- Deploy: set KROUTER_BASE and KROUTER_KEY in Vercel environment variables.
+
