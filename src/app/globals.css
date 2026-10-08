@@ -266,7 +266,7 @@ body {
 
 /* ── Messages ────────────────────────────────────────────────────────────────── */
 .kfai-msg {
-  margin-bottom: 22px;
+  margin-bottom: 16px;
   animation: kfai-fade-in 200ms ease both;
 }
 
@@ -296,7 +296,7 @@ body {
 .kfai-assistant {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
   max-width: 100%;
 }
 
@@ -358,40 +358,63 @@ body {
   border-top: 1px solid #1f1f23;
 }
 
-/* ── Tool card ───────────────────────────────────────────────────────────────── */
+/* ── Tool card (collapsible <details>) ────────────────────────────────────────── */
 .kfai-tool {
   border: 1px solid #1f1f23;
   border-radius: 6px;
   background: #111113;
   overflow: hidden;
   font-family: var(--font-mono), monospace;
+  margin-bottom: 4px;
 }
 
 .kfai-tool-head {
-  padding: 7px 12px;
-  font-size: 12px;
+  padding: 6px 12px;
+  font-size: 11px;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  cursor: pointer;
+  list-style: none;
+  overflow: hidden;
+}
+
+.kfai-tool-head::-webkit-details-marker {
+  display: none;
+}
+
+.kfai-tool-head::before {
+  content: "›";
+  color: #52525b;
+  font-weight: 700;
+  transition: transform 150ms;
+  flex-shrink: 0;
+}
+
+.kfai-tool[open] > .kfai-tool-head::before {
+  transform: rotate(90deg);
 }
 
 .kfai-tool-glyph {
   color: #f59e0b;
   font-weight: 600;
-  width: 14px;
+  width: 12px;
   text-align: center;
+  flex-shrink: 0;
 }
 
 .kfai-tool-name {
   color: var(--foreground);
   font-weight: 500;
+  flex-shrink: 0;
 }
 
 .kfai-tool-args {
   color: #71717a;
   font-size: 11px;
-  max-width: 60%;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -404,6 +427,7 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
 }
 
 .kfai-tool-status.kfai-running {
@@ -436,6 +460,7 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Result body — only visible when the <details> is open */
 .kfai-tool-result {
   padding: 8px 12px;
   font-size: 11px;
@@ -444,13 +469,8 @@ body {
   word-wrap: break-word;
   background: #16161a;
   border-top: 1px solid #1f1f23;
-  max-height: 200px;
+  max-height: 240px;
   overflow-y: auto;
-  display: none;
-}
-
-.kfai-tool-result.kfai-show {
-  display: block;
 }
 
 .kfai-tool-result::-webkit-scrollbar {

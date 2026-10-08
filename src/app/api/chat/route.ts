@@ -96,6 +96,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       let finalText = '';
       let hadError = false;
       let objectiveComplete = false;
+      let consecutiveUnknownTool = 0; // track repeated "Unknown tool" errors
+      let nudgeInjected = false; // only inject the nudge once
 
       for (let iter = 1; iter <= MAX_ITERS; iter++) {
         if (abortCtrl.signal.aborted) break;
@@ -146,13 +148,19 @@ export async function POST(req: NextRequest): Promise<Response> {
         // ── Execute tool calls ───────────────────────────────────────────────
         let sawTaskComplete = false;
         let lastIter = iter;
+        let iterHadUnknownTool = false;
         for (const tc of result.tool_calls) {
           if (abortCtrl.signal.aborted) break;
           send({ type: 'tool_call', id: tc.id, name: tc.name, args: tc.args, iter });
 
-          // Special reasoning tools emit their own SSE event types
-          // (but we still execute them server-side and feed results back).
           const toolResult = await executeTool(tc.name, tc.args);
+
+          // Track "Unknown tool" errors so we can nudge the model.
+          const isUnknown =
+            toolResult.status === 'error' &&
+            typeof toolResult.error === 'string' &&
+            toolResult.error.startsWith('Unknown tool:');
+          if (isUnknown) iterHadUnknownTool = true;
 
           // Emit special SSE events for plan / reflect / task_complete
           if (tc.name === 'plan' && toolResult.status === 'done') {
@@ -179,11 +187,8 @@ export async function POST(req: NextRequest): Promise<Response> {
               iter,
             });
             sawTaskComplete = true;
-            // still emit a tool_result so the client shows the card result
           }
 
-          // Standard tool_result event for all tools (including reasoning tools,
-          // so the tool card in the UI shows the structured output).
           send({
             type: 'tool_result',
             id: tc.id,
@@ -199,6 +204,22 @@ export async function POST(req: NextRequest): Promise<Response> {
           });
         }
 
+        // Update consecutive-unknown counter. If model keeps calling tools
+        // that don't exist, inject a one-time nudge to answer directly.
+        if (iterHadUnknownTool) {
+          consecutiveUnknownTool++;
+          if (consecutiveUnknownTool >= 2 && !nudgeInjected) {
+            nudgeInjected = true;
+            allMessages.push({
+              role: 'system',
+              content:
+                'You keep trying to call tools that are NOT available in this environment (they returned "Unknown tool"). Stop using your built-in tools (websearch, webfetch, glob, grep, edit, read, write, skill, task, todowrite). The ONLY tools that work here are: plan, reflect, task_complete, google_search, web_search, calculator, datetime, http_fetch, list_models, bash, weather, currency_convert, ip_lookup, uuid, hash, timestamp_convert, word_count, json_format, base64, color_convert, krouter_fetch, krouter_status, krouter_usage, krouter_recent_logs, krouter_list_models, krouter_list_providers, krouter_list_virtual_keys, krouter_list_prompts, krouter_model_health, krouter_cache, krouter_system, krouter_proxy_pool. If you have enough information to answer, STOP calling tools and write your final answer directly in the content stream. For simple questions about people, definitions, or general knowledge, just answer from your training data — no tools needed.',
+            });
+          }
+        } else {
+          consecutiveUnknownTool = 0;
+        }
+
         // If the model called task_complete, stop the loop — objective achieved.
         if (sawTaskComplete) {
           finalText = result.content || '';
@@ -206,6 +227,20 @@ export async function POST(req: NextRequest): Promise<Response> {
           send({ type: 'done', iter: lastIter, reason: 'objective_complete' });
           break;
         }
+      }
+
+      // ── Loop finished without producing any final text ──────────────────────
+      // This happens when the model kept calling tools and hit max iterations
+      // without ever giving a content answer. Send a fallback so the user sees
+      // something rather than a blank message.
+      if (!hadError && !objectiveComplete && !finalText && !abortCtrl.signal.aborted) {
+        const fallback =
+          'Maaf, saya tidak bisa menyelesaikan permintaan ini setelah beberapa percobaan. ' +
+          'Model terus mencoba tools yang tidak tersedia. Silakan coba pertanyaan yang lebih spesifik, ' +
+          'atau refresh halaman dan coba lagi.';
+        finalText = fallback;
+        send({ type: 'content', text: fallback, iter: MAX_ITERS });
+        send({ type: 'done', iter: MAX_ITERS, reason: 'fallback_after_max_iters' });
       }
 
       if (!hadError && !objectiveComplete && abortCtrl.signal.aborted) {

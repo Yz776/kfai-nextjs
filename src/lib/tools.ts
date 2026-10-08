@@ -48,7 +48,33 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'plan':          return toolPlan(String(args.goal ?? ''), Array.isArray(args.steps) ? args.steps as string[] : []);
       case 'reflect':      return toolReflect(String(args.progress ?? ''), String(args.assessment ?? ''), String(args.next ?? ''));
       case 'task_complete': return toolComplete(String(args.summary ?? ''), String(args.confidence ?? 'medium'));
-      default:                  return { status: 'error', error: `Unknown tool: ${name}` };
+      default: {
+        // Built-in model tools that don't exist in our environment — give a helpful
+        // redirect message so the model knows which KFAI tool to use instead.
+        const builtinRedirects: Record<string, string> = {
+          websearch: 'google_search',
+          web_fetch: 'http_fetch',
+          webfetch: 'http_fetch',
+          read: 'http_fetch',
+        };
+        const lower = name.toLowerCase();
+        if (builtinRedirects[lower]) {
+          return {
+            status: 'error',
+            error: `Unknown tool: ${name}. Use "${builtinRedirects[lower]}" instead — it is the KFAI equivalent that works in this environment.`,
+          };
+        }
+        // Other built-in tools (edit, glob, grep, write, skill, task, todowrite) — these
+        // have no KFAI equivalent. Tell the model to stop using tools and answer directly.
+        const noEquivalent = ['edit', 'glob', 'grep', 'write', 'skill', 'task', 'todowrite'];
+        if (noEquivalent.includes(lower)) {
+          return {
+            status: 'error',
+            error: `Unknown tool: ${name}. This tool has no equivalent in KFAI. Stop calling tools and answer directly from your knowledge.`,
+          };
+        }
+        return { status: 'error', error: `Unknown tool: ${name}` };
+      }
     }
   } catch (e: any) {
     return { status: 'error', error: e?.message || String(e) };

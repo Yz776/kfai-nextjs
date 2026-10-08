@@ -110,17 +110,17 @@ export default function Page() {
   }, [scrollToBottom]);
 
   const renderToolCard = useCallback((parent: HTMLElement, id: string, name: string, args: unknown) => {
-    const el = document.createElement("div");
+    const el = document.createElement("details");
     el.className = "kfai-tool";
     el.dataset.id = id;
     const argsStr = typeof args === "object" && args !== null ? JSON.stringify(args) : String(args);
     el.innerHTML = `
-      <div class="kfai-tool-head">
+      <summary class="kfai-tool-head">
         <span class="kfai-tool-glyph">⚙</span>
         <span class="kfai-tool-name">${escapeHtml(name)}</span>
         <span class="kfai-tool-args">${escapeHtml(argsStr)}</span>
         <span class="kfai-tool-status kfai-running"><span class="kfai-spin"></span>running</span>
-      </div>
+      </summary>
       <div class="kfai-tool-result"></div>`;
     parent.appendChild(el);
   }, []);
@@ -131,12 +131,14 @@ export default function Page() {
     const st = el.querySelector(".kfai-tool-status");
     st?.classList.remove("kfai-running");
     st?.classList.add(status === "error" ? "kfai-error-status" : "kfai-done-status");
-    if (st) st.innerHTML = `<span class="kfai-spin"></span>${escapeHtml(status || "done")}`;
+    if (st) {
+      const statusLabel = status === "error" ? "error" : "ok";
+      st.innerHTML = `<span class="kfai-spin"></span>${escapeHtml(statusLabel)}`;
+    }
     const r = el.querySelector(".kfai-tool-result");
     if (r) {
       const display = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       r.textContent = display;
-      r.classList.add("kfai-show");
     }
   }, []);
 
@@ -205,7 +207,7 @@ export default function Page() {
         if (!renderRef.current.thinkingEl) {
           const el = document.createElement("details");
           el.className = "kfai-thinking";
-          el.open = true;
+          el.open = false; // collapsed by default — expand only if user clicks
           el.innerHTML =
             '<summary><span class="kfai-think-label">thinking</span><span class="kfai-think-meta">stream</span></summary><div class="kfai-think-body"></div>';
           cur.appendChild(el);
@@ -257,6 +259,10 @@ export default function Page() {
       case "done":
         if (renderRef.current.textEl) {
           renderRef.current.textEl.innerHTML = renderMd(renderRef.current.textRaw);
+        }
+        // Auto-collapse thinking block once the stream is done — keeps the UI clean.
+        if (renderRef.current.thinkingEl) {
+          renderRef.current.thinkingEl.open = false;
         }
         onFinal(renderRef.current.textRaw);
         break;
