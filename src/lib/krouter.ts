@@ -589,6 +589,24 @@ export async function callKrouterStream(
       if (!dataStr || dataStr === '[DONE]') continue;
       let j: any;
       try { j = JSON.parse(dataStr); } catch { continue; }
+
+      // krouter may stream an error object directly (e.g. "No active provider
+      // connection for opencode"). Detect it and surface as a hard error so
+      // the loop doesn't spin uselessly for 12 iterations with no output.
+      if (j.error && typeof j.error === 'object' && j.error.message) {
+        state.error = String(j.error.message);
+        state.http = 502;
+        // drain the rest of the stream
+        try { await reader.cancel(); } catch {}
+        return state;
+      }
+      if (typeof j.error === 'string') {
+        state.error = j.error;
+        state.http = 502;
+        try { await reader.cancel(); } catch {}
+        return state;
+      }
+
       const choice = j.choices?.[0];
       if (!choice) continue;
       const delta = choice.delta || {};
