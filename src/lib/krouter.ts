@@ -32,7 +32,7 @@ export type ToolCall = {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const KROUTER_BASE = process.env.KROUTER_BASE || 'https://router.kangwifi.eu.org';
-const KROUTER_KEY = process.env.KROUTER_KEY || 'kr-67eac90a7a86c2a83691fada7de741ff8d1f56f5f69fdedf';
+const KROUTER_KEY = process.env.KROUTER_KEY || 'kr-9764f014f91358673b3e51b927abfb1c601417fe7c5dc7fe';
 export const DEFAULT_MODEL = 'opencode/big-pickle';
 
 export const MODELS_WHITELIST = [
