@@ -87,6 +87,13 @@ The ONLY tools that actually work here are:
 - json_format(json, action) — pretty/minify JSON
 - base64(text, action) — encode/decode base64
 - color_convert(color, to) — hex ↔ rgb
+- krouter_status() — gateway status (admin keys, providers, virtual keys)
+- krouter_usage(sinceHours) — token/cost/latency/error totals from request log
+- krouter_recent_logs(limit) — recent gateway requests (model, tokens, status, latency, cost)
+- krouter_model_health() — live probe of free OpenCode models
+- krouter_cache(action) — response cache stats or clear
+- krouter_system() — runtime info (versions, uptime, memory, feature toggles)
+- krouter_proxy_pool() — proxy routing mode and pool health
 
 If you need weather, use the weather() tool — NOT webfetch. If you need a web page, use http_fetch() — NOT webfetch. If you need to search, use web_search() — NOT websearch.
 
@@ -304,6 +311,72 @@ export const TOOLS: ToolDef[] = [
         },
         required: ['color', 'to'],
       },
+    },
+  },
+  // ── MCP tools (krouter gateway administration) ──
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_status',
+      description: 'Gateway status: admin keys, enabled providers, virtual keys, custom providers. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_usage',
+      description: 'Token, cost, latency, and error totals from the request log. Use sinceHours to limit window (0 = all time).',
+      parameters: {
+        type: 'object',
+        properties: { sinceHours: { type: 'number', description: 'Only count requests newer than this many hours. 0 means all time.' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_recent_logs',
+      description: 'Recent gateway requests: model, tokens, status, latency, cost. No prompts or secrets. Limit 1-100, default 20.',
+      parameters: {
+        type: 'object',
+        properties: { limit: { type: 'number', description: 'How many rows to return (1-100, default 20).' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_model_health',
+      description: 'Live probe of the OpenCode free models (big-pickle and friends) through the current proxy setup. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_cache',
+      description: 'Response cache statistics. Optional action "clear" wipes the cache.',
+      parameters: {
+        type: 'object',
+        properties: { action: { type: 'string', description: '"stats" (default) or "clear".' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_system',
+      description: 'Runtime info: versions, uptime, memory, feature toggles (public access, proxy mode, auto refresh). No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_proxy_pool',
+      description: 'Proxy routing mode, pool health stats, newest pool entries. Never returns proxy credentials. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
 ];

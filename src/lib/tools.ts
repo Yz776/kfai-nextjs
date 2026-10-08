@@ -4,6 +4,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { listKrouterModels } from './krouter';
+import { callMcpTool } from './mcp';
 
 export type ToolResult = {
   status: 'done' | 'error';
@@ -29,6 +30,14 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'json_format':       return toolJsonFormat(String(args.json ?? ''), String(args.action ?? 'pretty'));
       case 'base64':            return toolBase64(String(args.text ?? ''), String(args.action ?? 'encode'));
       case 'color_convert':     return toolColorConvert(String(args.color ?? ''), String(args.to ?? 'hex'));
+      // ── MCP tools (routed to krouter MCP server) ──
+      case 'krouter_status':       return await toolMcp('krouter_status', {});
+      case 'krouter_usage':        return await toolMcp('krouter_usage', args.sinceHours !== undefined ? { sinceHours: Number(args.sinceHours) } : {});
+      case 'krouter_recent_logs':  return await toolMcp('krouter_recent_logs', args.limit !== undefined ? { limit: Number(args.limit) } : {});
+      case 'krouter_model_health': return await toolMcp('krouter_model_health', {});
+      case 'krouter_cache':        return await toolMcp('krouter_cache', args.action ? { action: String(args.action) } : {});
+      case 'krouter_system':       return await toolMcp('krouter_system', {});
+      case 'krouter_proxy_pool':   return await toolMcp('krouter_proxy_pool', {});
       default:                  return { status: 'error', error: `Unknown tool: ${name}` };
     }
   } catch (e: any) {
@@ -465,6 +474,23 @@ function toolColorConvert(color: string, to: string): ToolResult {
     return { status: 'done', input: c, hex: '#' + hex, rgb: `rgb(${r},${g},${b})`, r, g, b };
   }
   return { status: 'error', error: `Target must be "hex" or "rgb", got: ${target}` };
+}
+
+// ── MCP tool wrapper: calls krouter MCP server via JSON-RPC ────────────────────
+async function toolMcp(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const r = await callMcpTool(name, args);
+  if (!r.ok) {
+    return { status: 'error', error: r.error || 'MCP call failed' };
+  }
+  // The MCP tool returns text (usually JSON). Try to parse it for structured output;
+  // fall back to raw text if not JSON.
+  const text = r.text || '';
+  try {
+    const parsed = JSON.parse(text);
+    return { status: 'done', mcp_tool: name, ...parsed };
+  } catch {
+    return { status: 'done', mcp_tool: name, result: text };
+  }
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
