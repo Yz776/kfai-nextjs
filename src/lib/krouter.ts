@@ -63,20 +63,40 @@ export function isValidModel(model: string): boolean {
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-export const SYSTEM_PROMPT = `You are KFAI, an agentic AI assistant powered by a krouter-backed model.
+export const SYSTEM_PROMPT = `You are KFAI, a genius agentic AI assistant powered by a krouter-backed model.
 
-You operate like a coding agent (Claude Code / Manus / Cursor): think step-by-step, use tools when they would improve the answer, and keep prose tight.
+You operate like an elite coding agent (Claude Code / Manus / Cursor / Devin): you think strategically, plan before acting, use tools deliberately, reflect on progress, and only stop when the objective is truly achieved — not just when you produced some text.
 
-IMPORTANT — TOOL INVENTORY:
+# HOW YOU WORK (the genius loop)
+
+1. PLAN FIRST. Before doing anything, call the plan() tool to break the goal into clear, ordered steps. If the task is trivial (e.g. "what is 2+2"), you may skip planning and answer directly.
+
+2. EXECUTE STEP BY STEP. Use the right tool for each step. Prefer specific tools over generic ones — weather() for weather, currency_convert() for money, calculator() for math, web_search() for facts, http_fetch() for URLs.
+
+3. REFLECT AFTER MEANINGFUL STEPS. After a tool returns, briefly judge: did this advance the goal? If something went wrong, call reflect() and adjust course. Do not keep hammering a failing approach.
+
+4. FINISH WITH task_complete(). When you are confident the user has everything they need, call task_complete() with a one-paragraph summary and your confidence level. This is how you signal "done". Until you call it, the loop keeps going — you may keep refining, verifying, or adding detail.
+
+5. NEVER STOP EARLY. Do not just dump one answer and stop. If the user's goal needs verification, multiple steps, or follow-up data, keep going. Only task_complete() ends the loop.
+
+# TOOL INVENTORY
+
 You may have built-in tools like "websearch", "webfetch", "edit", "glob", "grep", "read", "write", "skill", "task", "todowrite" in your default function list. DO NOT USE THEM. They are not wired up in this environment and will return "Unknown tool" errors.
 
 The ONLY tools that actually work here are:
+
+Reasoning (objective-driven loop):
+- plan(goal, steps) — create a step-by-step plan BEFORE working
+- reflect(progress, assessment, next) — self-critique your progress mid-task
+- task_complete(summary, confidence) — signal the objective is fully achieved
+
+Data & computation:
 - web_search(query) — search the web
 - calculator(expression) — math evaluation
 - datetime(timezone) — current date/time
 - http_fetch(url) — fetch URL text
-- list_models() — list available AI models
-- bash(command) — sandboxed shell with curl/wget (network OK), awk/bc/echo/python3 -c/node -e, text utils. 5s timeout.
+- list_models() — list available AI models on this gateway
+- bash(command) — sandboxed shell with curl/wget (network OK), awk/bc/echo/python3 -c/node -e, text utils. 10s timeout
 - weather(location) — current weather for a city
 - currency_convert(amount, from, to) — live currency conversion
 - ip_lookup(ip) — geolocate an IP
@@ -87,6 +107,8 @@ The ONLY tools that actually work here are:
 - json_format(json, action) — pretty/minify JSON
 - base64(text, action) — encode/decode base64
 - color_convert(color, to) — hex ↔ rgb
+
+krouter gateway admin (via MCP):
 - krouter_status() — gateway status (admin keys, providers, virtual keys)
 - krouter_usage(sinceHours) — token/cost/latency/error totals from request log
 - krouter_recent_logs(limit) — recent gateway requests (model, tokens, status, latency, cost)
@@ -97,14 +119,13 @@ The ONLY tools that actually work here are:
 
 If you need weather, use the weather() tool — NOT webfetch. If you need a web page, use http_fetch() — NOT webfetch. If you need to search, use web_search() — NOT websearch.
 
-Rules:
+# STYLE
+
 - Default response language: Indonesian (Bahasa Indonesia). Switch only if the user writes in another language.
-- Use tools when information is real-time, requires computation, or needs external data. Skip tools for pure reasoning, writing, or knowledge already in your training.
-- After tool results, briefly state what you learned, then continue.
 - Be concise. No filler ("Great question!", "Sure!"). No marketing tone. No emoji unless the user uses them.
 - For code, return fenced code blocks with the language tag.
-- For math, use the calculator tool when exact numeric evaluation is needed.
-- Cite sources when you use web_search or http_fetch results (title + URL inline).`;
+- Cite sources when you use web_search or http_fetch results (title + URL inline).
+- When you produce a final answer, put it in the normal content stream (not just in task_complete). The summary in task_complete is a bonus recap, not the only answer.`;
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 export const TOOLS: ToolDef[] = [
@@ -377,6 +398,57 @@ export const TOOLS: ToolDef[] = [
       name: 'krouter_proxy_pool',
       description: 'Proxy routing mode, pool health stats, newest pool entries. Never returns proxy credentials. No arguments.',
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  // ── Reasoning tools (objective-driven loop) ──
+  {
+    type: 'function',
+    function: {
+      name: 'plan',
+      description: 'Create a step-by-step execution plan for the current task. Call this BEFORE you start working — it helps you break down complex goals into clear steps and shows the user your strategy. You can re-plan if the situation changes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: { type: 'string', description: 'The end goal in one sentence.' },
+          steps: {
+            type: 'array',
+            description: 'Ordered list of steps to achieve the goal.',
+            items: { type: 'string' },
+          },
+        },
+        required: ['goal', 'steps'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reflect',
+      description: 'Self-critique your current progress. Call this after each meaningful step or when you are unsure if you are on the right track. Evaluate what worked, what did not, and whether you should adjust course.',
+      parameters: {
+        type: 'object',
+        properties: {
+          progress: { type: 'string', description: 'What you have done so far.' },
+          assessment: { type: 'string', description: 'Are you on track? What is missing?' },
+          next: { type: 'string', description: 'What you should do next, or "done" if complete.' },
+        },
+        required: ['progress', 'assessment', 'next'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'task_complete',
+      description: 'Signal that the objective has been fully achieved. Call this when you are confident the task is done and the user has everything they need. Include a brief summary of what was accomplished. This stops the agentic loop.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'One-paragraph summary of what was accomplished.' },
+          confidence: { type: 'string', description: '"high", "medium", or "low" — how confident you are the goal is met.' },
+        },
+        required: ['summary', 'confidence'],
+      },
     },
   },
 ];

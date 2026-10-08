@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createHash, randomUUID } from 'crypto';
+import { spawn } from 'child_process';
 import { listKrouterModels } from './krouter';
 import { callMcpTool } from './mcp';
 
@@ -38,6 +39,10 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'krouter_cache':        return await toolMcp('krouter_cache', args.action ? { action: String(args.action) } : {});
       case 'krouter_system':       return await toolMcp('krouter_system', {});
       case 'krouter_proxy_pool':   return await toolMcp('krouter_proxy_pool', {});
+      // ── Reasoning tools (no side effects, just structured output) ──
+      case 'plan':          return toolPlan(String(args.goal ?? ''), Array.isArray(args.steps) ? args.steps as string[] : []);
+      case 'reflect':      return toolReflect(String(args.progress ?? ''), String(args.assessment ?? ''), String(args.next ?? ''));
+      case 'task_complete': return toolComplete(String(args.summary ?? ''), String(args.confidence ?? 'medium'));
       default:                  return { status: 'error', error: `Unknown tool: ${name}` };
     }
   } catch (e: any) {
@@ -192,8 +197,11 @@ async function toolBash(command: string): Promise<ToolResult> {
   if (/\$\((?!\()/.test(cmd)) {
     return { status: 'error', error: 'Blocked: command substitution $()' };
   }
-  // Block file redirects
-  const stripped = cmd.replace(/'(?:\\.|[^'\\])*'/g, "''");
+  // Block file redirects — strip both single and double quoted strings first
+  // so redirects inside code (e.g. node -e "for(let i=0;i<3;...") don't trigger.
+  const stripped = cmd
+    .replace(/'(?:\\.|[^'\\])*'/g, "''")
+    .replace(/"(?:\\.|[^"\\])*"/g, '""');
   if (/(?<![\d-])>\s*\S/.test(stripped) || /(?<!-)<\s*\S/.test(stripped)) {
     return { status: 'error', error: 'Blocked: file redirect (> or <)' };
   }
@@ -233,25 +241,35 @@ async function toolBash(command: string): Promise<ToolResult> {
   // Normalize python → python3
   const execCmd = cmd.replace(/\bpython\b(?!3)\b/g, 'python3');
 
-  // Execute with timeout
+  // Execute with timeout (use Node child_process for portability across runtimes)
   try {
-    const proc = Bun.spawn(['sh', '-c', execCmd], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const proc = spawn('sh', ['-c', execCmd], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, LANG: 'C.UTF-8' },
+      });
+      let out = '';
+      let err = '';
+      proc.stdout?.on('data', (chunk) => { out += chunk.toString(); });
+      proc.stderr?.on('data', (chunk) => { err += chunk.toString(); });
+      const timer = setTimeout(() => {
+        proc.kill(9);
+      }, 10000);
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        resolve(JSON.stringify({ code, out, err }));
+      });
+      proc.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
     });
-    // 10s timeout (network calls like curl may need more time)
-    const timeout = setTimeout(() => proc.kill(9), 10000);
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    clearTimeout(timeout);
-    const exitCode = await proc.exited;
+    const { code, out, err } = JSON.parse(stdout);
     return {
       status: 'done',
-      exit_code: exitCode,
-      stdout: stdout.trim().slice(0, 2000),
-      stderr: stderr.trim().slice(0, 500),
+      exit_code: code,
+      stdout: (out as string).trim().slice(0, 2000),
+      stderr: (err as string).trim().slice(0, 500),
     };
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Failed to execute' };
@@ -474,6 +492,40 @@ function toolColorConvert(color: string, to: string): ToolResult {
     return { status: 'done', input: c, hex: '#' + hex, rgb: `rgb(${r},${g},${b})`, r, g, b };
   }
   return { status: 'error', error: `Target must be "hex" or "rgb", got: ${target}` };
+}
+
+// ── plan: structured plan returned to client ────────────────────────────────────
+function toolPlan(goal: string, steps: string[]): ToolResult {
+  const cleanSteps = steps.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim());
+  return {
+    status: 'done',
+    goal: goal.trim(),
+    step_count: cleanSteps.length,
+    steps: cleanSteps,
+  };
+}
+
+// ── reflect: self-critique returned to client ──────────────────────────────────
+function toolReflect(progress: string, assessment: string, next: string): ToolResult {
+  return {
+    status: 'done',
+    progress: progress.trim(),
+    assessment: assessment.trim(),
+    next: next.trim(),
+  };
+}
+
+// ── task_complete: signals the objective is achieved ─────────────────────────────
+function toolComplete(summary: string, confidence: string): ToolResult {
+  const conf = ['high', 'medium', 'low'].includes(confidence.toLowerCase().trim())
+    ? confidence.toLowerCase().trim()
+    : 'medium';
+  return {
+    status: 'done',
+    objective_achieved: true,
+    summary: summary.trim(),
+    confidence: conf,
+  };
 }
 
 // ── MCP tool wrapper: calls krouter MCP server via JSON-RPC ────────────────────

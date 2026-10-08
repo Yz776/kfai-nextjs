@@ -1,28 +1,34 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// KFAI — /api/chat  —  Server-side agentic loop with SSE streaming
-// ─────────────────────────────────────────────────────────────────────────────
+// KFAI — /api/chat — Server-side objective-driven agentic loop with SSE streaming.
+//
 // Browser POSTs { messages }. Server runs the agentic loop with a fixed
-// model (the client does not get to choose):
-//   1. Call krouter (stream) → accumulate reasoning + content + tool_calls
-//   2. Stream reasoning + content + tool_call events to the client
-//   3. If tool_calls present → execute them server-side → feed results back
-//   4. Repeat until no tool_calls (max 6 iterations)
+// model. The loop only stops when:
+//   - the model calls `task_complete` (objective achieved), OR
+//   - the model produces final text with no further tool calls (natural stop), OR
+//   - max iterations reached (timeout safety net).
+//
+// Special tool handling:
+//   - plan()       → emits a `plan` SSE event (shown as a plan card in UI)
+//   - reflect()    → emits a `reflect` SSE event (shown as a reflection card)
+//   - task_complete() → emits a `task_complete` SSE event AND stops the loop.
 //
 // SSE event types:
 //   { type: 'start', iter: 0 }
 //   { type: 'iter_start', iter }
-//   { type: 'thinking', text }       (reasoning delta)
-//   { type: 'content', text }        (content delta)
+//   { type: 'thinking', text }
+//   { type: 'content', text }
 //   { type: 'tool_call', id, name, args }
 //   { type: 'tool_result', id, name, result, status }
-//   { type: 'done', iter }
+//   { type: 'plan', goal, steps }
+//   { type: 'reflect', progress, assessment, next }
+//   { type: 'task_complete', summary, confidence }
+//   { type: 'done', iter, reason }
 //   { type: 'error', message }
 //   { type: 'end' }
 
 import { NextRequest } from 'next/server';
 import {
-  callKrouterStream, isValidModel, DEFAULT_MODEL, SYSTEM_PROMPT,
-  type ChatMessage, type ToolCall,
+  callKrouterStream, DEFAULT_MODEL, SYSTEM_PROMPT,
+  type ChatMessage,
 } from '@/lib/krouter';
 import { executeTool } from '@/lib/tools';
 
@@ -30,7 +36,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
-const MAX_ITERS = 6;
+const MAX_ITERS = 12;
 
 export async function POST(req: NextRequest): Promise<Response> {
   // Parse body
@@ -89,6 +95,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       let finalText = '';
       let hadError = false;
+      let objectiveComplete = false;
 
       for (let iter = 1; iter <= MAX_ITERS; iter++) {
         if (abortCtrl.signal.aborted) break;
@@ -118,7 +125,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           break;
         }
 
-        // Append assistant message to history
+        // Append assistant message to history (with tool_calls if any)
         const assistantMsg: ChatMessage = { role: 'assistant', content: result.content || '' };
         if (result.tool_calls.length > 0) {
           assistantMsg.tool_calls = result.tool_calls.map((tc) => ({
@@ -129,18 +136,54 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
         allMessages.push(assistantMsg);
 
-        // No tool calls → done
+        // No tool calls → natural stop (model produced final text)
         if (result.tool_calls.length === 0) {
           finalText = result.content;
-          send({ type: 'done', iter });
+          send({ type: 'done', iter, reason: 'natural_stop' });
           break;
         }
 
         // ── Execute tool calls ───────────────────────────────────────────────
+        let sawTaskComplete = false;
+        let lastIter = iter;
         for (const tc of result.tool_calls) {
           if (abortCtrl.signal.aborted) break;
           send({ type: 'tool_call', id: tc.id, name: tc.name, args: tc.args, iter });
+
+          // Special reasoning tools emit their own SSE event types
+          // (but we still execute them server-side and feed results back).
           const toolResult = await executeTool(tc.name, tc.args);
+
+          // Emit special SSE events for plan / reflect / task_complete
+          if (tc.name === 'plan' && toolResult.status === 'done') {
+            send({
+              type: 'plan',
+              goal: toolResult.goal,
+              steps: toolResult.steps,
+              step_count: toolResult.step_count,
+              iter,
+            });
+          } else if (tc.name === 'reflect' && toolResult.status === 'done') {
+            send({
+              type: 'reflect',
+              progress: toolResult.progress,
+              assessment: toolResult.assessment,
+              next: toolResult.next,
+              iter,
+            });
+          } else if (tc.name === 'task_complete' && toolResult.status === 'done') {
+            send({
+              type: 'task_complete',
+              summary: toolResult.summary,
+              confidence: toolResult.confidence,
+              iter,
+            });
+            sawTaskComplete = true;
+            // still emit a tool_result so the client shows the card result
+          }
+
+          // Standard tool_result event for all tools (including reasoning tools,
+          // so the tool card in the UI shows the structured output).
           send({
             type: 'tool_result',
             id: tc.id,
@@ -155,13 +198,26 @@ export async function POST(req: NextRequest): Promise<Response> {
             content: JSON.stringify(toolResult),
           });
         }
+
+        // If the model called task_complete, stop the loop — objective achieved.
+        if (sawTaskComplete) {
+          finalText = result.content || '';
+          objectiveComplete = true;
+          send({ type: 'done', iter: lastIter, reason: 'objective_complete' });
+          break;
+        }
       }
 
-      if (!hadError && abortCtrl.signal.aborted) {
+      if (!hadError && !objectiveComplete && abortCtrl.signal.aborted) {
         // Client disconnected — keep what we have
       }
       if (!hadError) {
-        send({ type: 'end', final_text: finalText });
+        send({
+          type: 'end',
+          final_text: finalText,
+          objective_complete: objectiveComplete,
+          reached_max_iters: !objectiveComplete && !abortCtrl.signal.aborted,
+        });
       }
 
       try {

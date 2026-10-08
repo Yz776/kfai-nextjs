@@ -12,17 +12,19 @@ type SSEEvent =
   | { type: "content"; text: string; iter: number }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown>; iter: number }
   | { type: "tool_result"; id: string; name: string; result: unknown; status: string; iter: number }
-  | { type: "done"; iter: number }
+  | { type: "plan"; goal: string; steps: string[]; step_count: number; iter: number }
+  | { type: "reflect"; progress: string; assessment: string; next: string; iter: number }
+  | { type: "task_complete"; summary: string; confidence: string; iter: number }
+  | { type: "done"; iter: number; reason: string }
   | { type: "error"; message: string; iter?: number }
-  | { type: "end"; final_text: string };
+  | { type: "end"; final_text: string; objective_complete: boolean; reached_max_iters: boolean };
 
 const EXAMPLES = [
-  "What time is it now in Jakarta, Tokyo, and New York?",
-  "Search the web for the latest news about AI agents and summarize the top 3 stories.",
-  "Calculate (15² + 3×7) / 2 step by step.",
-  "What's the weather in Bandung right now?",
-  "Convert 100 USD to IDR at the latest rate.",
-  "Write a Python function to check if a string is a palindrome, with tests.",
+  "Research the latest AI agent frameworks, compare 3 of them, and recommend one for building a chat assistant. Plan your approach first.",
+  "What's the weather in Bandung right now, and what should I wear? Plan, then decide.",
+  "Convert 100 USD to IDR, then tell me how many meals that could buy in Jakarta (assume 1 meal = 25000 IDR).",
+  "What's the krouter gateway usage in the last 24 hours? How many errors? Plan before answering.",
+  "Generate 3 UUIDs and hash each with sha256. Summarize what you did.",
 ];
 
 // ── Tiny markdown renderer ─────────────────────────────────────────────────────
@@ -138,6 +140,52 @@ export default function Page() {
     }
   }, []);
 
+  // ── Plan card ────────────────────────────────────────────────────────────────
+  const renderPlanCard = useCallback((parent: HTMLElement, goal: string, steps: string[]) => {
+    const el = document.createElement("div");
+    el.className = "kfai-plan";
+    const stepsHtml = steps.map((s, i) => `<li>${escapeHtml(s)}</li>`).join("");
+    el.innerHTML = `
+      <div class="kfai-plan-head">
+        <span class="kfai-plan-glyph">▶</span>
+        <span class="kfai-plan-label">PLAN</span>
+        <span class="kfai-plan-goal">${escapeHtml(goal)}</span>
+      </div>
+      <ol class="kfai-plan-steps">${stepsHtml}</ol>`;
+    parent.appendChild(el);
+  }, []);
+
+  // ── Reflect card ─────────────────────────────────────────────────────────────
+  const renderReflectCard = useCallback((parent: HTMLElement, progress: string, assessment: string, next: string) => {
+    const el = document.createElement("div");
+    el.className = "kfai-reflect";
+    el.innerHTML = `
+      <div class="kfai-reflect-head">
+        <span class="kfai-reflect-glyph">↻</span>
+        <span class="kfai-reflect-label">REFLECT</span>
+      </div>
+      <div class="kfai-reflect-body">
+        <div class="kfai-reflect-row"><b>progress:</b> ${escapeHtml(progress)}</div>
+        <div class="kfai-reflect-row"><b>assessment:</b> ${escapeHtml(assessment)}</div>
+        <div class="kfai-reflect-row"><b>next:</b> ${escapeHtml(next)}</div>
+      </div>`;
+    parent.appendChild(el);
+  }, []);
+
+  // ── Task complete badge ──────────────────────────────────────────────────────
+  const renderCompleteCard = useCallback((parent: HTMLElement, summary: string, confidence: string) => {
+    const el = document.createElement("div");
+    el.className = `kfai-complete kfai-conf-${escapeHtml(confidence)}`;
+    el.innerHTML = `
+      <div class="kfai-complete-head">
+        <span class="kfai-complete-glyph">✓</span>
+        <span class="kfai-complete-label">OBJECTIVE COMPLETE</span>
+        <span class="kfai-complete-conf">confidence: ${escapeHtml(confidence)}</span>
+      </div>
+      <div class="kfai-complete-summary">${escapeHtml(summary)}</div>`;
+    parent.appendChild(el);
+  }, []);
+
   // ── SSE handler ──────────────────────────────────────────────────────────────
   const handleSSE = useCallback((evt: SSEEvent, onFinal: (t: string) => void) => {
     switch (evt.type) {
@@ -177,6 +225,21 @@ export default function Page() {
       case "tool_result":
         updateToolCard(evt.id, evt.result, evt.status);
         break;
+      case "plan": {
+        const cur = ensureMsg();
+        renderPlanCard(cur, evt.goal, evt.steps);
+        break;
+      }
+      case "reflect": {
+        const cur = ensureMsg();
+        renderReflectCard(cur, evt.progress, evt.assessment, evt.next);
+        break;
+      }
+      case "task_complete": {
+        const cur = ensureMsg();
+        renderCompleteCard(cur, evt.summary, evt.confidence);
+        break;
+      }
       case "content": {
         const cur = ensureMsg();
         if (!renderRef.current.textEl) {
@@ -208,7 +271,7 @@ export default function Page() {
         break;
     }
     scrollToBottom();
-  }, [ensureMsg, renderToolCard, updateToolCard, appendError, scrollToBottom]);
+  }, [ensureMsg, renderToolCard, updateToolCard, renderPlanCard, renderReflectCard, renderCompleteCard, appendError, scrollToBottom]);
 
   // ── SSE reader ────────────────────────────────────────────────────────────────
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>): Promise<string> => {
