@@ -16,6 +16,7 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   try {
     switch (name) {
       case 'web_search':        return await toolWebSearch(String(args.query ?? ''));
+      case 'google_search':     return await toolGoogleSearch(String(args.query ?? ''));
       case 'calculator':        return toolCalculator(String(args.expression ?? ''));
       case 'datetime':          return toolDatetime(String(args.timezone ?? 'Asia/Jakarta'));
       case 'http_fetch':        return await toolHttpFetch(String(args.url ?? ''));
@@ -89,6 +90,120 @@ async function toolWebSearch(query: string): Promise<ToolResult> {
   }
 
   return { status: 'done', query: q, results };
+}
+
+// ── google_search: Brave Search scrape (Google+Bing backend) ────────────────────
+// Brave Search returns full HTML with results. We scrape the structured
+// result divs (class="snippet svelte-...") to extract title, URL, and snippet.
+// This is more reliable than DuckDuckGo (which is frequently rate-limited)
+// and serves as our "Google" search since Brave uses Google + Bing as backend.
+//
+// Brave rate-limits aggressively (HTTP 429). We rotate User-Agents and retry
+// with backoff. As a final fallback, we delegate to toolWebSearch (DuckDuckGo).
+async function toolGoogleSearch(query: string): Promise<ToolResult> {
+  const q = query.trim();
+  if (!q) return { status: 'error', error: 'Empty query' };
+
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+  ];
+
+  let html = '';
+  let httpStatus = 0;
+  let lastError = '';
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ua = userAgents[attempt % userAgents.length];
+    const url = `https://search.brave.com/search?q=${encodeURIComponent(q)}`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': ua,
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      httpStatus = res.status;
+      if (res.ok) {
+        html = await res.text();
+        break;
+      } else if (res.status === 429) {
+        // Exponential backoff: 1s, 2s, 4s
+        lastError = `HTTP 429 (rate-limited, attempt ${attempt + 1})`;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      } else {
+        lastError = `HTTP ${res.status}`;
+        const body = await res.text();
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
+        continue;
+      }
+    } catch (e: any) {
+      lastError = e?.message || 'fetch error';
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+
+  if (!html) {
+    // Fallback to DuckDuckGo (legacy web_search)
+    const fallback = await toolWebSearch(q);
+    return {
+      status: fallback.status,
+      query: q,
+      backend: 'duckduckgo-fallback',
+      note: `Brave unavailable (${lastError}); fell back to DuckDuckGo`,
+      result_count: fallback.results?.length ?? 0,
+      results: fallback.results ?? [],
+    };
+  }
+
+  const results: Array<{ title: string; url: string; snippet: string }> = [];
+  const titleRe = /<div[^>]*class="[^"]*search-snippet-title[^"]*"[^>]*>([\s\S]*?)<\/div>/;
+  const linkRe = /<a[^>]+href="(https?:\/\/(?!brave\.com|cdn\.brave|search\.brave|[\w.-]*brave\.|imgs\.search\.brave)[^"]+)"/;
+  const snippetRe = /<div[^>]*class="[^"]*content[^"]*line-clamp-dynamic[^"]*"[^>]*>([\s\S]*?)<\/div>/;
+
+  // Split HTML at each result wrapper
+  const positions: number[] = [];
+  const posRe = /<div[^>]*class="[^"]*snippet svelte-[^"]*"[^>]*data-type="web"/g;
+  let pm: RegExpExecArray | null;
+  while ((pm = posRe.exec(html)) !== null) positions.push(pm.index);
+
+  for (let i = 0; i < positions.length && results.length < 8; i++) {
+    const start = positions[i];
+    const end = i + 1 < positions.length ? positions[i + 1] : html.length;
+    const block = html.slice(start, end);
+
+    const titleM = block.match(titleRe);
+    const linkM = block.match(linkRe);
+    if (!titleM || !linkM) continue;
+
+    const title = titleM[1].replace(/<[^>]+>/g, '').trim();
+    const linkUrl = linkM[1];
+    if (!title || title.length < 3) continue;
+
+    const snippetM = block.match(snippetRe);
+    const snippet = snippetM ? snippetM[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '';
+
+    results.push({
+      title: title.slice(0, 200),
+      url: linkUrl,
+      snippet: snippet.slice(0, 300),
+    });
+  }
+
+  return {
+    status: 'done',
+    query: q,
+    backend: 'brave',
+    result_count: results.length,
+    results,
+  };
 }
 
 // ── calculator: safe math eval ─────────────────────────────────────────────────

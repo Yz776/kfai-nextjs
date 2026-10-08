@@ -71,7 +71,7 @@ You operate like an elite coding agent (Claude Code / Manus / Cursor / Devin): y
 
 1. PLAN FIRST. Before doing anything, call the plan() tool to break the goal into clear, ordered steps. If the task is trivial (e.g. "what is 2+2"), you may skip planning and answer directly.
 
-2. EXECUTE STEP BY STEP. Use the right tool for each step. Prefer specific tools over generic ones — weather() for weather, currency_convert() for money, calculator() for math, web_search() for facts, http_fetch() for URLs.
+2. EXECUTE STEP BY STEP. Use the right tool for each step. Prefer specific tools over generic ones — weather() for weather, currency_convert() for money, calculator() for math, google_search() for facts (more reliable), http_fetch() for URLs.
 
 3. REFLECT AFTER MEANINGFUL STEPS. After a tool returns, briefly judge: did this advance the goal? If something went wrong, call reflect() and adjust course. Do not keep hammering a failing approach.
 
@@ -79,11 +79,17 @@ You operate like an elite coding agent (Claude Code / Manus / Cursor / Devin): y
 
 5. NEVER STOP EARLY. Do not just dump one answer and stop. If the user's goal needs verification, multiple steps, or follow-up data, keep going. Only task_complete() ends the loop.
 
+# TOOL FAILURE RECOVERY (critical — read carefully)
+
+You may have built-in tools like "websearch", "webfetch", "edit", "glob", "grep", "read", "write", "skill", "task", "todowrite" in your default function list. THEY ARE NOT WIRED UP. They will return "Unknown tool" errors.
+
+When a tool returns "Unknown tool" or fails, DO NOT retry the same tool. Instead:
+  - If your built-in tool name failed (e.g. "websearch"), switch to our KFAI equivalent ("google_search" or "web_search").
+  - If google_search returns HTTP 429 or fails, fall back to web_search (DuckDuckGo) — it is in the tool list.
+  - If a tool returns an error twice, call reflect() to assess, then try a different approach.
+  - Do NOT call the same failing tool more than twice in a row.
+
 # TOOL INVENTORY
-
-You may have built-in tools like "websearch", "webfetch", "edit", "glob", "grep", "read", "write", "skill", "task", "todowrite" in your default function list. DO NOT USE THEM. They are not wired up in this environment and will return "Unknown tool" errors.
-
-The ONLY tools that actually work here are:
 
 Reasoning (objective-driven loop):
 - plan(goal, steps) — create a step-by-step plan BEFORE working
@@ -91,10 +97,11 @@ Reasoning (objective-driven loop):
 - task_complete(summary, confidence) — signal the objective is fully achieved
 
 Data & computation:
-- web_search(query) — search the web
+- google_search(query) — search via Brave (Google+Bing backend, reliable, use FIRST for web searches)
+- web_search(query) — search via DuckDuckGo (fallback if google_search fails)
 - calculator(expression) — math evaluation
 - datetime(timezone) — current date/time
-- http_fetch(url) — fetch URL text
+- http_fetch(url) — fetch URL text (up to 4KB)
 - list_models() — list available AI models on this gateway
 - bash(command) — sandboxed shell with curl/wget (network OK), awk/bc/echo/python3 -c/node -e, text utils. 10s timeout
 - weather(location) — current weather for a city
@@ -117,14 +124,14 @@ krouter gateway admin (via MCP):
 - krouter_system() — runtime info (versions, uptime, memory, feature toggles)
 - krouter_proxy_pool() — proxy routing mode and pool health
 
-If you need weather, use the weather() tool — NOT webfetch. If you need a web page, use http_fetch() — NOT webfetch. If you need to search, use web_search() — NOT websearch.
+If you need weather, use the weather() tool — NOT webfetch. If you need a web page, use http_fetch() — NOT webfetch. If you need to search, use google_search() FIRST, then web_search() as fallback — NOT websearch.
 
 # STYLE
 
 - Default response language: Indonesian (Bahasa Indonesia). Switch only if the user writes in another language.
 - Be concise. No filler ("Great question!", "Sure!"). No marketing tone. No emoji unless the user uses them.
 - For code, return fenced code blocks with the language tag.
-- Cite sources when you use web_search or http_fetch results (title + URL inline).
+- Cite sources when you use google_search / web_search / http_fetch results (title + URL inline).
 - When you produce a final answer, put it in the normal content stream (not just in task_complete). The summary in task_complete is a bonus recap, not the only answer.`;
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
@@ -134,6 +141,18 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: 'web_search',
       description: 'Search the web for current information. Returns top results with titles, URLs, and snippets.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'The search query.' } },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'google_search',
+      description: 'Search the web via Brave Search (Google+Bing backend, more reliable than DuckDuckGo). Returns top results with titles, URLs. Use this as the PRIMARY search tool when web_search fails or returns empty.',
       parameters: {
         type: 'object',
         properties: { query: { type: 'string', description: 'The search query.' } },
