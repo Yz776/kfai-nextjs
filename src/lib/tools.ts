@@ -2,6 +2,7 @@
 // KFAI — Server-side tool implementations
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createHash, randomUUID } from 'crypto';
 import { listKrouterModels } from './krouter';
 
 export type ToolResult = {
@@ -12,13 +13,23 @@ export type ToolResult = {
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   try {
     switch (name) {
-      case 'web_search':   return await toolWebSearch(String(args.query ?? ''));
-      case 'calculator':   return toolCalculator(String(args.expression ?? ''));
-      case 'datetime':     return toolDatetime(String(args.timezone ?? 'Asia/Jakarta'));
-      case 'http_fetch':   return await toolHttpFetch(String(args.url ?? ''));
-      case 'list_models':  return await toolListModels();
-      case 'bash':         return await toolBash(String(args.command ?? ''));
-      default:             return { status: 'error', error: `Unknown tool: ${name}` };
+      case 'web_search':        return await toolWebSearch(String(args.query ?? ''));
+      case 'calculator':        return toolCalculator(String(args.expression ?? ''));
+      case 'datetime':          return toolDatetime(String(args.timezone ?? 'Asia/Jakarta'));
+      case 'http_fetch':        return await toolHttpFetch(String(args.url ?? ''));
+      case 'list_models':       return await toolListModels();
+      case 'bash':              return await toolBash(String(args.command ?? ''));
+      case 'weather':           return await toolWeather(String(args.location ?? ''));
+      case 'currency_convert':  return await toolCurrencyConvert(Number(args.amount ?? 0), String(args.from ?? ''), String(args.to ?? ''));
+      case 'ip_lookup':         return await toolIpLookup(String(args.ip ?? ''));
+      case 'uuid':              return toolUuid(Number(args.count ?? 1));
+      case 'hash':              return toolHash(String(args.text ?? ''), String(args.algorithm ?? 'sha256'));
+      case 'timestamp_convert': return toolTimestampConvert(String(args.value ?? ''), String(args.direction ?? 'to_human'), String(args.timezone ?? 'UTC'));
+      case 'word_count':        return toolWordCount(String(args.text ?? ''));
+      case 'json_format':       return toolJsonFormat(String(args.json ?? ''), String(args.action ?? 'pretty'));
+      case 'base64':            return toolBase64(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'color_convert':     return toolColorConvert(String(args.color ?? ''), String(args.to ?? 'hex'));
+      default:                  return { status: 'error', error: `Unknown tool: ${name}` };
     }
   } catch (e: any) {
     return { status: 'error', error: e?.message || String(e) };
@@ -159,7 +170,7 @@ async function toolBash(command: string): Promise<ToolResult> {
     'rm -', 'rmdir', 'unlink', 'mkdir', 'mv ', 'cp ', 'chmod', 'chown',
     'mkfifo', 'mknod', '/dev/', '/etc/', '/root/', '/proc/', '/sys/',
     'sudo', 'su ', 'kill', 'pkill', 'nohup',
-    'curl ', 'wget ', 'ssh ', 'scp ', 'rsync', 'nc -', 'nc ',
+    'ssh ', 'scp ', 'rsync', 'nc -', 'nc ',
     'bash -', 'sh -', 'zsh -', 'fish -',
     '>>', '&>', '>&', '<(', '>(', '<<',
   ];
@@ -187,6 +198,7 @@ async function toolBash(command: string): Promise<ToolResult> {
     'seq', 'sort', 'uniq', 'head', 'tail', 'wc', 'tr', 'cut', 'paste',
     'column', 'cal', 'python3', 'python', 'node', 'sleep', 'pwd',
     'hostname', 'whoami', 'id', 'true', 'false', 'test',
+    'curl', 'wget',
   ];
   for (const seg of cmd.split('|')) {
     let s = seg.trimStart();
@@ -218,8 +230,8 @@ async function toolBash(command: string): Promise<ToolResult> {
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    // 5s timeout
-    const timeout = setTimeout(() => proc.kill(9), 5000);
+    // 10s timeout (network calls like curl may need more time)
+    const timeout = setTimeout(() => proc.kill(9), 10000);
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
@@ -235,6 +247,224 @@ async function toolBash(command: string): Promise<ToolResult> {
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Failed to execute' };
   }
+}
+
+// ── weather: wttr.in (free, no API key) ────────────────────────────────────────
+async function toolWeather(location: string): Promise<ToolResult> {
+  const loc = location.trim();
+  if (!loc) return { status: 'error', error: 'Empty location' };
+  const url = `https://wttr.in/${encodeURIComponent(loc)}?format=j1`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KFAI/1.0)' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) return { status: 'error', error: `Weather fetch failed (HTTP ${res.status})` };
+  const j: any = await res.json();
+  const cur = j.current_condition?.[0] || {};
+  const area = j.nearest_area?.[0] || {};
+  return {
+    status: 'done',
+    location: area.areaName?.[0]?.value || loc,
+    region: area.region?.[0]?.value || '',
+    country: area.country?.[0]?.value || '',
+    temperature: `${cur.temp_C}°C (${cur.temp_F}°F)`,
+    feels_like: `${cur.FeelsLikeC}°C (${cur.FeelsLikeF}°F)`,
+    condition: cur.weatherDesc?.[0]?.value || '',
+    humidity: `${cur.humidity}%`,
+    wind: `${cur.windspeedKmph} km/h ${cur.winddir16Point}`,
+    visibility: `${cur.visibility} km`,
+    pressure: `${cur.pressure} hPa`,
+    uv_index: cur.uvIndex,
+    observed_at: cur.localObsDateTime,
+  };
+}
+
+// ── currency_convert: open.er-api.com (free, no API key) ───────────────────────
+async function toolCurrencyConvert(amount: number, from: string, to: string): Promise<ToolResult> {
+  const amt = Number(amount);
+  if (!isFinite(amt)) return { status: 'error', error: 'Invalid amount' };
+  const f = from.trim().toUpperCase();
+  const t = to.trim().toUpperCase();
+  if (!f || !t) return { status: 'error', error: 'Missing currency code' };
+  if (f.length !== 3 || t.length !== 3) return { status: 'error', error: 'Currency codes must be 3 letters' };
+  const url = `https://open.er-api.com/v6/latest/${f}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) return { status: 'error', error: `Rate fetch failed (HTTP ${res.status})` };
+  const j: any = await res.json();
+  if (j.result !== 'success') return { status: 'error', error: j['error-type'] || 'API error' };
+  const rate = j.rates?.[t];
+  if (!rate) return { status: 'error', error: `No rate for ${f} → ${t}` };
+  return {
+    status: 'done',
+    amount,
+    from: f,
+    to: t,
+    rate,
+    converted: Math.round(amt * rate * 100) / 100,
+    updated: j.time_last_update_utc,
+  };
+}
+
+// ── ip_lookup: ipwho.is (free, no API key, no rate limit) ──────────────────────────
+async function toolIpLookup(ip: string): Promise<ToolResult> {
+  const clean = ip.trim();
+  const url = clean
+    ? `https://ipwho.is/${encodeURIComponent(clean)}`
+    : 'https://ipwho.is/';
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KFAI/1.0)' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) return { status: 'error', error: `IP lookup failed (HTTP ${res.status})` };
+  const j: any = await res.json();
+  if (j.success === false) return { status: 'error', error: j.message || 'IP lookup error' };
+  return {
+    status: 'done',
+    ip: j.ip || clean,
+    city: j.city || '',
+    region: j.region || '',
+    country: j.country || '',
+    country_code: j.country_code || '',
+    latitude: j.latitude,
+    longitude: j.longitude,
+    timezone: j.timezone?.id || '',
+    isp: j.connection?.isp || j.connection?.org || '',
+  };
+}
+
+// ── uuid: generate UUID v4 ──────────────────────────────────────────────────────
+function toolUuid(count: number): ToolResult {
+  const n = Math.max(1, Math.min(20, Math.floor(Number(count) || 1)));
+  const uuids: string[] = [];
+  for (let i = 0; i < n; i++) uuids.push(randomUUID());
+  return { status: 'done', count: uuids.length, uuids };
+}
+
+// ── hash: sha256/sha1/md5 ────────────────────────────────────────────────────────
+function toolHash(text: string, algorithm: string): ToolResult {
+  const alg = algorithm.toLowerCase().trim();
+  if (!['sha256', 'sha1', 'md5'].includes(alg)) {
+    return { status: 'error', error: `Unsupported algorithm: ${alg}. Use sha256, sha1, or md5.` };
+  }
+  const h = createHash(alg as 'sha256' | 'sha1' | 'md5');
+  h.update(text, 'utf8');
+  return { status: 'done', algorithm: alg, input_length: text.length, hash: h.digest('hex') };
+}
+
+// ── timestamp_convert ────────────────────────────────────────────────────────────
+function toolTimestampConvert(value: string, direction: string, timezone: string): ToolResult {
+  const dir = direction.toLowerCase().trim();
+  if (dir === 'to_human') {
+    const ts = Number(value);
+    if (!isFinite(ts)) return { status: 'error', error: 'Invalid timestamp' };
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return { status: 'error', error: 'Invalid date from timestamp' };
+    try {
+      const fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: timezone || 'UTC',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false, timeZoneName: 'short',
+      });
+      return {
+        status: 'done',
+        timestamp: ts,
+        datetime: fmt.format(d),
+        iso: d.toISOString(),
+        timezone: timezone || 'UTC',
+      };
+    } catch {
+      return { status: 'error', error: `Invalid timezone: ${timezone}` };
+    }
+  } else if (dir === 'to_unix') {
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return { status: 'error', error: 'Invalid date string' };
+    return {
+      status: 'done',
+      input: value,
+      timestamp: Math.floor(d.getTime() / 1000),
+      iso: d.toISOString(),
+    };
+  }
+  return { status: 'error', error: `Direction must be "to_human" or "to_unix", got: ${dir}` };
+}
+
+// ── word_count ────────────────────────────────────────────────────────────────────
+function toolWordCount(text: string): ToolResult {
+  const trimmed = text.trim();
+  const words = trimmed ? trimmed.split(/\s+/).length : 0;
+  const chars = text.length;
+  const charsNoSpace = text.replace(/\s/g, '').length;
+  const lines = text ? text.split('\n').length : 0;
+  return {
+    status: 'done',
+    words,
+    characters: chars,
+    characters_no_spaces: charsNoSpace,
+    lines,
+  };
+}
+
+// ── json_format ──────────────────────────────────────────────────────────────────
+function toolJsonFormat(json: string, action: string): ToolResult {
+  const act = action.toLowerCase().trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (e: any) {
+    return { status: 'error', error: 'Invalid JSON: ' + (e?.message || String(e)) };
+  }
+  if (act === 'pretty') {
+    return { status: 'done', action: 'pretty', result: JSON.stringify(parsed, null, 2) };
+  } else if (act === 'minify') {
+    return { status: 'done', action: 'minify', result: JSON.stringify(parsed) };
+  }
+  return { status: 'error', error: `Action must be "pretty" or "minify", got: ${act}` };
+}
+
+// ── base64 ───────────────────────────────────────────────────────────────────────
+function toolBase64(text: string, action: string): ToolResult {
+  const act = action.toLowerCase().trim();
+  try {
+    if (act === 'encode') {
+      // Convert string to UTF-8 bytes, then to base64
+      const bytes = Buffer.from(text, 'utf8');
+      return { status: 'done', action: 'encode', result: bytes.toString('base64') };
+    } else if (act === 'decode') {
+      const bytes = Buffer.from(text, 'base64');
+      return { status: 'done', action: 'decode', result: bytes.toString('utf8') };
+    }
+    return { status: 'error', error: `Action must be "encode" or "decode", got: ${act}` };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Base64 conversion failed' };
+  }
+}
+
+// ── color_convert ──────────────────────────────────────────────────────────────────
+function toolColorConvert(color: string, to: string): ToolResult {
+  const target = to.toLowerCase().trim();
+  const c = color.trim();
+
+  if (target === 'hex') {
+    // Accept "rgb(255,136,0)" or "255,136,0"
+    const m = c.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) return { status: 'error', error: 'Cannot parse RGB. Use "rgb(r,g,b)" or "r,g,b".' };
+    const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
+    if (r > 255 || g > 255 || b > 255) return { status: 'error', error: 'RGB values must be 0-255' };
+    const hex = '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+    return { status: 'done', input: c, hex, rgb: `rgb(${r},${g},${b})` };
+  } else if (target === 'rgb') {
+    // Accept "#ff8800" or "ff8800"
+    const m = c.match(/^#?([0-9a-f]{6}|[0-9a-f]{3})$/i);
+    if (!m) return { status: 'error', error: 'Cannot parse hex. Use "#rrggbb" or "#rgb".' };
+    let hex = m[1];
+    if (hex.length === 3) hex = hex.split('').map((ch) => ch + ch).join('');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return { status: 'done', input: c, hex: '#' + hex, rgb: `rgb(${r},${g},${b})`, r, g, b };
+  }
+  return { status: 'error', error: `Target must be "hex" or "rgb", got: ${target}` };
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────

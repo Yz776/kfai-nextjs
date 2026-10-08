@@ -1,7 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // KFAI — /api/chat  —  Server-side agentic loop with SSE streaming
 // ─────────────────────────────────────────────────────────────────────────────
-// Browser POSTs { messages, model }. Server runs the agentic loop:
+// Browser POSTs { messages }. Server runs the agentic loop with a fixed
+// model (the client does not get to choose):
 //   1. Call krouter (stream) → accumulate reasoning + content + tool_calls
 //   2. Stream reasoning + content + tool_call events to the client
 //   3. If tool_calls present → execute them server-side → feed results back
@@ -59,8 +60,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ error: 'Empty message history' }, { status: 400 });
   }
 
-  let model = typeof body.model === 'string' ? body.model : DEFAULT_MODEL;
-  if (!isValidModel(model)) model = DEFAULT_MODEL;
+  // Always use the default model — the client does not get to choose.
+  const model = DEFAULT_MODEL;
 
   // Build the full message array with system prompt prepended
   const allMessages: ChatMessage[] = [
@@ -84,7 +85,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
       };
 
-      send({ type: 'start', iter: 0, model });
+      send({ type: 'start', iter: 0 });
 
       let finalText = '';
       let hadError = false;

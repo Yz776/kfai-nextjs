@@ -6,7 +6,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 type HistoryMsg = { role: "user" | "assistant"; content: string };
 
 type SSEEvent =
-  | { type: "start"; iter: number; model: string }
+  | { type: "start"; iter: number }
   | { type: "iter_start"; iter: number }
   | { type: "thinking"; text: string; iter: number }
   | { type: "content"; text: string; iter: number }
@@ -16,32 +16,12 @@ type SSEEvent =
   | { type: "error"; message: string; iter?: number }
   | { type: "end"; final_text: string };
 
-const MODELS = [
-  "opencode/big-pickle",
-  "opencode/claude-sonnet-4",
-  "opencode/claude-haiku-4-5",
-  "opencode/claude-opus-4",
-  "opencode/gpt-5.4",
-  "opencode/gpt-5.4-mini",
-  "opencode/gpt-5.1-codex",
-  "opencode/gemini-3.5-flash",
-  "opencode/gemini-3.6-flash",
-  "opencode/glm-5.3-flash",
-  "opencode/deepseek-v4-flash",
-  "opencode/qwen3.8-flash",
-  "opencode/kimi-k3",
-  "opencode/mistral-large-4",
-  "opencode/grok-4.7",
-  "opencode/muse-spark-1.3",
-  "opencode/jev-1.13-free",
-  "opencode/exo-free",
-];
-
 const EXAMPLES = [
   "What time is it now in Jakarta, Tokyo, and New York?",
   "Search the web for the latest news about AI agents and summarize the top 3 stories.",
   "Calculate (15² + 3×7) / 2 step by step.",
-  "List the AI models available on this router.",
+  "What's the weather in Bandung right now?",
+  "Convert 100 USD to IDR at the latest rate.",
   "Write a Python function to check if a string is a palindrome, with tests.",
 ];
 
@@ -87,12 +67,6 @@ export default function Page() {
   const [history, setHistory] = useState<HistoryMsg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [model, setModel] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("kfai_model") || MODELS[0];
-    }
-    return MODELS[0];
-  });
   const [statusText, setStatusText] = useState("ready");
   const [statusOnline, setStatusOnline] = useState(true);
   const [statusBusy, setStatusBusy] = useState(false);
@@ -287,7 +261,7 @@ export default function Page() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newHistory, model }),
+        body: JSON.stringify({ messages: newHistory }),
         signal: abortRef.current.signal,
       });
 
@@ -310,7 +284,7 @@ export default function Page() {
     setStatusOnline(true);
     setStatusText("ready");
     abortRef.current = null;
-  }, [input, streaming, history, model, appendUser, appendError, readSSE]);
+  }, [input, streaming, history, appendUser, appendError, readSSE]);
 
   // ── New chat ──────────────────────────────────────────────────────────────────
   const newChat = useCallback(() => {
@@ -319,11 +293,6 @@ export default function Page() {
     setHistory([]);
     renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "" };
   }, [streaming]);
-
-  // ── Model save ───────────────────────────────────────────────────────────────
-  useEffect(() => {
-    localStorage.setItem("kfai_model", model);
-  }, [model]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────────
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -372,19 +341,6 @@ export default function Page() {
             <span className="kfai-status-dot" />
             <span>{statusText}</span>
           </div>
-          <select
-            className="kfai-model-sel"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            title="Model"
-            aria-label="Model"
-          >
-            {MODELS.map((m) => (
-              <option key={m} value={m}>
-                {m.replace(/^opencode\//, "")}
-              </option>
-            ))}
-          </select>
           <button className="kfai-icon-btn" onClick={newChat} title="New chat">
             new
           </button>

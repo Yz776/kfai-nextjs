@@ -67,6 +67,29 @@ export const SYSTEM_PROMPT = `You are KFAI, an agentic AI assistant powered by a
 
 You operate like a coding agent (Claude Code / Manus / Cursor): think step-by-step, use tools when they would improve the answer, and keep prose tight.
 
+IMPORTANT — TOOL INVENTORY:
+You may have built-in tools like "websearch", "webfetch", "edit", "glob", "grep", "read", "write", "skill", "task", "todowrite" in your default function list. DO NOT USE THEM. They are not wired up in this environment and will return "Unknown tool" errors.
+
+The ONLY tools that actually work here are:
+- web_search(query) — search the web
+- calculator(expression) — math evaluation
+- datetime(timezone) — current date/time
+- http_fetch(url) — fetch URL text
+- list_models() — list available AI models
+- bash(command) — sandboxed shell with curl/wget (network OK), awk/bc/echo/python3 -c/node -e, text utils. 5s timeout.
+- weather(location) — current weather for a city
+- currency_convert(amount, from, to) — live currency conversion
+- ip_lookup(ip) — geolocate an IP
+- uuid(count) — generate UUID v4
+- hash(text, algorithm) — sha256/sha1/md5
+- timestamp_convert(value, direction, timezone) — unix ↔ human date
+- word_count(text) — count words/chars/lines
+- json_format(json, action) — pretty/minify JSON
+- base64(text, action) — encode/decode base64
+- color_convert(color, to) — hex ↔ rgb
+
+If you need weather, use the weather() tool — NOT webfetch. If you need a web page, use http_fetch() — NOT webfetch. If you need to search, use web_search() — NOT websearch.
+
 Rules:
 - Default response language: Indonesian (Bahasa Indonesia). Switch only if the user writes in another language.
 - Use tools when information is real-time, requires computation, or needs external data. Skip tools for pure reasoning, writing, or knowledge already in your training.
@@ -74,9 +97,7 @@ Rules:
 - Be concise. No filler ("Great question!", "Sure!"). No marketing tone. No emoji unless the user uses them.
 - For code, return fenced code blocks with the language tag.
 - For math, use the calculator tool when exact numeric evaluation is needed.
-- Cite sources when you use web_search or http_fetch results (title + URL inline).
-
-You have access to the following tools: web_search, calculator, datetime, http_fetch, list_models, bash.`;
+- Cite sources when you use web_search or http_fetch results (title + URL inline).`;
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 export const TOOLS: ToolDef[] = [
@@ -139,11 +160,149 @@ export const TOOLS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'bash',
-      description: 'Run sandboxed shell. awk/bc/echo/python3 -c/node -e only. No file writes, no network, 5s timeout.',
+      description: 'Run sandboxed shell. Supports awk/bc/echo/python3 -c/node -e/curl/wget for network fetches, plus text utils. 5s timeout, no file writes. Example: curl -s "https://wttr.in/Bandung?format=j1" | head -c 2000',
       parameters: {
         type: 'object',
         properties: { command: { type: 'string', description: 'The shell command to run.' } },
         required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'weather',
+      description: 'Get current weather for a city. Returns temperature, conditions, humidity, wind. Example: weather("Bandung").',
+      parameters: {
+        type: 'object',
+        properties: { location: { type: 'string', description: 'City name, e.g. "Bandung" or "Jakarta, Indonesia".' } },
+        required: ['location'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'currency_convert',
+      description: 'Convert an amount from one currency to another using live exchange rates. Example: 100 USD → IDR.',
+      parameters: {
+        type: 'object',
+        properties: {
+          amount: { type: 'number', description: 'The amount to convert.' },
+          from: { type: 'string', description: 'Source currency code, e.g. "USD".' },
+          to: { type: 'string', description: 'Target currency code, e.g. "IDR".' },
+        },
+        required: ['amount', 'from', 'to'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ip_lookup',
+      description: 'Geolocate an IP address. Returns country, city, ISP, timezone. If no IP given, looks up the server IP.',
+      parameters: {
+        type: 'object',
+        properties: { ip: { type: 'string', description: 'IPv4 or IPv6 address. Leave empty for server IP.' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'uuid',
+      description: 'Generate one or more UUID v4 strings.',
+      parameters: {
+        type: 'object',
+        properties: { count: { type: 'number', description: 'Number of UUIDs to generate (default 1, max 20).' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'hash',
+      description: 'Compute hash of a string. Algorithms: sha256, sha1, md5.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'The input string.' },
+          algorithm: { type: 'string', description: 'Algorithm: sha256, sha1, or md5.' },
+        },
+        required: ['text', 'algorithm'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'timestamp_convert',
+      description: 'Convert between Unix timestamp and human-readable date. Direction: "to_human" (timestamp → date) or "to_unix" (date → timestamp).',
+      parameters: {
+        type: 'object',
+        properties: {
+          value: { type: 'string', description: 'The value to convert (timestamp number or ISO date string).' },
+          direction: { type: 'string', description: '"to_human" or "to_unix".' },
+          timezone: { type: 'string', description: 'IANA timezone for display, e.g. "Asia/Jakarta". Defaults to UTC.' },
+        },
+        required: ['value', 'direction'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'word_count',
+      description: 'Count words, characters, and lines in a text.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'The text to analyze.' } },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'json_format',
+      description: 'Pretty-print or minify a JSON string. Action: "pretty" (indent 2) or "minify".',
+      parameters: {
+        type: 'object',
+        properties: {
+          json: { type: 'string', description: 'The JSON string to format.' },
+          action: { type: 'string', description: '"pretty" or "minify".' },
+        },
+        required: ['json', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'base64',
+      description: 'Encode or decode a Base64 string.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'The input string.' },
+          action: { type: 'string', description: '"encode" or "decode".' },
+        },
+        required: ['text', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'color_convert',
+      description: 'Convert between hex (#ff8800) and rgb (255,136,0).',
+      parameters: {
+        type: 'object',
+        properties: {
+          color: { type: 'string', description: 'The color value, e.g. "#ff8800" or "rgb(255,136,0)".' },
+          to: { type: 'string', description: 'Target format: "hex" or "rgb".' },
+        },
+        required: ['color', 'to'],
       },
     },
   },
