@@ -40,6 +40,10 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'krouter_cache':        return await toolMcp('krouter_cache', args.action ? { action: String(args.action) } : {});
       case 'krouter_system':       return await toolMcp('krouter_system', {});
       case 'krouter_proxy_pool':   return await toolMcp('krouter_proxy_pool', {});
+      case 'krouter_fetch':        return await toolMcpFetch(String(args.url ?? ''));
+      case 'krouter_list_providers': return await toolMcp('krouter_list_providers', {});
+      case 'krouter_list_virtual_keys': return await toolMcp('krouter_list_virtual_keys', {});
+      case 'krouter_list_prompts': return await toolMcp('krouter_list_prompts', {});
       // ── Reasoning tools (no side effects, just structured output) ──
       case 'plan':          return toolPlan(String(args.goal ?? ''), Array.isArray(args.steps) ? args.steps as string[] : []);
       case 'reflect':      return toolReflect(String(args.progress ?? ''), String(args.assessment ?? ''), String(args.next ?? ''));
@@ -257,24 +261,84 @@ function toolDatetime(tz: string): ToolResult {
 }
 
 // ── http_fetch ──────────────────────────────────────────────────────────────────
+// Tries direct fetch first; on HTTP 429 (rate-limited) or network error,
+// automatically falls back to krouter_fetch (proxy pool) which routes via
+// different IPs and bypasses rate-limits.
 async function toolHttpFetch(url: string): Promise<ToolResult> {
   const u = url.trim();
   if (!u || !/^https?:\/\//i.test(u)) return { status: 'error', error: 'Invalid URL' };
-  const res = await fetch(u, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KFAI/1.0)' },
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow',
-  });
-  if (!res.ok) return { status: 'error', error: `HTTP ${res.status}`, final_url: res.url };
-  const body = await res.text();
+
+  // Try direct fetch first
+  let directFailed = false;
+  let directError = '';
+  let body = '';
+  let finalUrl = u;
+  let contentType = '';
+  let bodyLength = 0;
+
+  try {
+    const res = await fetch(u, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KFAI/1.0)' },
+      signal: AbortSignal.timeout(20000),
+      redirect: 'follow',
+    });
+    if (res.ok) {
+      body = await res.text();
+      finalUrl = res.url;
+      contentType = res.headers.get('content-type') || '';
+      bodyLength = body.length;
+    } else if (res.status === 429) {
+      // Rate-limited → try krouter_fetch fallback
+      directFailed = true;
+      directError = `HTTP ${res.status}`;
+    } else {
+      // Other HTTP error → also try fallback
+      directFailed = true;
+      directError = `HTTP ${res.status}`;
+    }
+  } catch (e: any) {
+    directFailed = true;
+    directError = e?.message || 'network error';
+  }
+
+  // Fallback to krouter_fetch via MCP proxy pool
+  if (directFailed) {
+    const mcpResult = await toolMcpFetch(u);
+    if (mcpResult.status === 'done') {
+      return {
+        status: 'done',
+        url: mcpResult.url,
+        length: mcpResult.bytes || 0,
+        content: mcpResult.content || '',
+        fetched_via: 'krouter_proxy_pool',
+        fallback_reason: directError,
+      };
+    }
+    // Fallback also failed — return original error
+    return {
+      status: 'error',
+      error: `Direct fetch failed (${directError}) and krouter_fetch fallback also failed`,
+      url: u,
+    };
+  }
+
+  // Strip HTML
   let text = body;
-  text = text.replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>/gi, '\n\n');
-  text = stripTags(text);
-  text = text.replace(/\s+/g, ' ').trim();
+  if (contentType.includes('text/html')) {
+    text = text.replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<\/p>/gi, '\n\n');
+    text = stripTags(text);
+    text = text.replace(/\s+/g, ' ').trim();
+  }
   if (text.length > 4000) text = text.slice(0, 4000) + '…[truncated]';
-  return { status: 'done', url: res.url, length: body.length, content: text };
+  return {
+    status: 'done',
+    url: finalUrl,
+    length: bodyLength,
+    content: text,
+    fetched_via: 'direct',
+  };
 }
 
 // ── list_models ─────────────────────────────────────────────────────────────────
@@ -332,7 +396,30 @@ async function toolBash(command: string): Promise<ToolResult> {
     'hostname', 'whoami', 'id', 'true', 'false', 'test',
     'curl', 'wget',
   ];
-  for (const seg of cmd.split('|')) {
+  // Split by pipe | but only outside of quotes (so regex like 'a|b' inside
+  // a python -c "..." string is not split into separate commands).
+  function splitPipes(cmd: string): string[] {
+    const parts: string[] = [];
+    let cur = '';
+    let inSingle = false, inDouble = false;
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (ch === "'" && !inDouble) { inSingle = !inSingle; cur += ch; continue; }
+      if (ch === '"' && !inSingle) { inDouble = !inDouble; cur += ch; continue; }
+      if (ch === '\\' && !inSingle && !inDouble && i + 1 < cmd.length) { cur += ch + cmd[i+1]; i++; continue; }
+      if (ch === '|' && !inSingle && !inDouble) {
+        // Check for || (logical OR) — don't split
+        if (cmd[i+1] === '|') { cur += '||'; i++; continue; }
+        parts.push(cur);
+        cur = '';
+        continue;
+      }
+      cur += ch;
+    }
+    if (cur.trim()) parts.push(cur);
+    return parts;
+  }
+  for (const seg of splitPipes(cmd)) {
     let s = seg.trimStart();
     while (/^[A-Za-z_][A-Za-z0-9_]*=\S+\s+/.test(s)) {
       s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S+\s+/, '');
@@ -658,6 +745,77 @@ async function toolMcp(name: string, args: Record<string, unknown>): Promise<Too
   } catch {
     return { status: 'done', mcp_tool: name, result: text };
   }
+}
+
+// ── krouter_fetch: fetch URL via proxy pool, decode base64 body ─────────────────
+// krouter_fetch MCP tool returns bodyBase64-encoded content. We decode it to
+// readable text and strip HTML tags for clean output to the model.
+async function toolMcpFetch(url: string): Promise<ToolResult> {
+  const u = url.trim();
+  if (!u) return { status: 'error', error: 'Empty URL' };
+  if (!/^https?:\/\//i.test(u)) return { status: 'error', error: 'Only http/https URLs allowed' };
+
+  const r = await callMcpTool('krouter_fetch', { url: u });
+  if (!r.ok) {
+    return { status: 'error', error: r.error || 'krouter_fetch MCP call failed' };
+  }
+
+  let payload: any;
+  try {
+    payload = JSON.parse(r.text || '{}');
+  } catch {
+    return { status: 'error', error: 'Invalid response from krouter_fetch' };
+  }
+
+  if (!payload.ok && payload.status !== 200) {
+    return {
+      status: 'error',
+      error: `Fetch failed (HTTP ${payload.status})`,
+      url: payload.url,
+      via_proxy: payload.viaProxy,
+      warning: payload.warning,
+    };
+  }
+
+  // Decode base64 body
+  let bodyText = '';
+  if (payload.bodyBase64) {
+    try {
+      const bytes = Buffer.from(payload.bodyBase64, 'base64');
+      bodyText = bytes.toString('utf8');
+    } catch {
+      bodyText = '';
+    }
+  }
+
+  // Strip HTML for cleaner output (model doesn't need raw HTML).
+  // For JSON and plain text, return as-is.
+  let cleanText = bodyText;
+  const ct = payload.contentType || '';
+  if (ct.includes('text/html')) {
+    cleanText = bodyText
+      .replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (cleanText.length > 4000) cleanText = cleanText.slice(0, 4000) + '…[truncated]';
+
+  return {
+    status: 'done',
+    url: payload.url,
+    http_status: payload.status,
+    content_type: ct,
+    bytes: payload.bytes,
+    via_proxy: payload.viaProxy,
+    proxy: payload.proxy,
+    warning: payload.warning,
+    content: cleanText,
+  };
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────

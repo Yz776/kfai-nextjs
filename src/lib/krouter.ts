@@ -86,6 +86,7 @@ You may have built-in tools like "websearch", "webfetch", "edit", "glob", "grep"
 When a tool returns "Unknown tool" or fails, DO NOT retry the same tool. Instead:
   - If your built-in tool name failed (e.g. "websearch"), switch to our KFAI equivalent ("google_search" or "web_search").
   - If google_search returns HTTP 429 or fails, fall back to web_search (DuckDuckGo) — it is in the tool list.
+  - If http_fetch returns HTTP 429 or fails, fall back to krouter_fetch(url) — it uses the proxy pool to bypass rate-limits.
   - If a tool returns an error twice, call reflect() to assess, then try a different approach.
   - Do NOT call the same failing tool more than twice in a row.
 
@@ -116,9 +117,14 @@ Data & computation:
 - color_convert(color, to) — hex ↔ rgb
 
 krouter gateway admin (via MCP):
+- krouter_fetch(url) — fetch URL via proxy pool (bypasses HTTP 429 rate-limits — use when http_fetch or google_search fail)
 - krouter_status() — gateway status (admin keys, providers, virtual keys)
 - krouter_usage(sinceHours) — token/cost/latency/error totals from request log
 - krouter_recent_logs(limit) — recent gateway requests (model, tokens, status, latency, cost)
+- krouter_list_models() — list all models exposed by enabled providers
+- krouter_list_providers() — list built-in and custom providers
+- krouter_list_virtual_keys() — list virtual keys with scopes and usage
+- krouter_list_prompts() — list saved prompt templates on the gateway
 - krouter_model_health() — live probe of free OpenCode models
 - krouter_cache(action) — response cache stats or clear
 - krouter_system() — runtime info (versions, uptime, memory, feature toggles)
@@ -416,6 +422,42 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: 'krouter_proxy_pool',
       description: 'Proxy routing mode, pool health stats, newest pool entries. Never returns proxy credentials. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_fetch',
+      description: 'Fetch an http(s) URL through the krouter proxy pool. Use this when http_fetch or google_search fail with HTTP 429 (rate-limited) — the proxy pool routes through different IPs so it bypasses rate limits. Returns status, content-type, body (base64-encoded).',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'The http(s) URL to fetch.' } },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_list_providers',
+      description: 'List built-in and custom providers on the gateway. API keys are never returned. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_list_virtual_keys',
+      description: 'List virtual keys with scopes and usage. Key secrets are never returned. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_list_prompts',
+      description: 'List saved prompt templates on the gateway. No arguments.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
