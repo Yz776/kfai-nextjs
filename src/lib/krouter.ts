@@ -978,7 +978,8 @@ export async function callKrouterStream(
   const state: StreamResult = {
     reasoning: '', content: '', tool_calls: [], finish: null, http: 200, error: null,
   };
-  let thinkBuffer: string | null = null; // tracks <think> blocks in content
+  let thinkMode: 'detect' | 'thinking' | 'content' = 'detect';
+  let detectBuffer = '';
   const tcAccum: Record<number, { id: string; name: string; args_str: string }> = {};
 
   while (true) {
@@ -1025,58 +1026,110 @@ export async function callKrouterStream(
         onChunk?.({ reasoning: delta.reasoning_content });
       }
       if (delta.content) {
-        // Some models (e.g. big-pickle) wrap reasoning in <think>...</think>
-        // tags inside the content stream instead of using reasoning_content.
-        // Detect these tags and redirect to reasoning so they don't pollute
-        // the final answer shown to the user.
         let chunk: string = delta.content;
-        if (thinkBuffer !== null) {
-          // We're inside a <think> block — accumulate until </think>
-          const closeTag = '</' + 'think>';
-          const closeIdx = chunk.indexOf(closeTag);
-          if (closeIdx >= 0) {
-            const thinkPart = chunk.slice(0, closeIdx);
-            const rest = chunk.slice(closeIdx + closeTag.length);
-            state.reasoning += thinkPart;
-            onChunk?.({ reasoning: thinkPart });
-            thinkBuffer = null;
+
+        // ── Think tag detection ──
+        // Models like big-pickle send reasoning as content, ending with '</' + 'think>'.
+        // Two patterns:
+        //   A: answer ... reasoning ... answer  (has opening tag)
+        //   B: reasoning ... answer  (no opening tag, just closing)
+        // We buffer the first 300 chars to detect which pattern, then route accordingly.
+
+        if (thinkMode === 'detect') {
+          detectBuffer += chunk;
+          const ot = '<' + 'think>';
+          const ct = '</' + 'think>';
+
+          // Pattern B: closing tag found in buffer → everything before is reasoning
+          if (detectBuffer.includes(ct)) {
+            const ci = detectBuffer.indexOf(ct);
+            const thinkPart = detectBuffer.slice(0, ci);
+            const rest = detectBuffer.slice(ci + ct.length);
+            if (thinkPart) { state.reasoning += thinkPart; onChunk?.({ reasoning: thinkPart }); }
+            thinkMode = 'content';
+            detectBuffer = '';
             chunk = rest;
+          }
+          // Pattern A: opening tag found → before is content, after is reasoning
+          else if (detectBuffer.includes(ot)) {
+            const oi = detectBuffer.indexOf(ot);
+            const before = detectBuffer.slice(0, oi);
+            const after = detectBuffer.slice(oi + ot.length);
+            if (before) { state.content += before; onChunk?.({ content: before }); }
+            const ci = after.indexOf(ct);
+            if (ci >= 0) {
+              const tp = after.slice(0, ci);
+              const r = after.slice(ci + ct.length);
+              if (tp) { state.reasoning += tp; onChunk?.({ reasoning: tp }); }
+              if (r) { state.content += r; onChunk?.({ content: r }); }
+            } else {
+              state.reasoning += after;
+              onChunk?.({ reasoning: after });
+              thinkMode = 'thinking';
+            }
+            detectBuffer = '';
+            chunk = '';
+          }
+          // No think tags yet but buffer is getting big → assume no think tags, flush as content
+          // But use a generous limit (8000) since reasoning can be long.
+          else if (detectBuffer.length > 8000) {
+            state.content += detectBuffer;
+            onChunk?.({ content: detectBuffer });
+            thinkMode = 'content';
+            detectBuffer = '';
+            // chunk still has current content
+          }
+          // else: keep buffering, don't emit yet
+          else {
+            chunk = '';
+          }
+        }
+
+        // In 'thinking' mode: route to reasoning until closing tag
+        if (thinkMode === 'thinking' && chunk) {
+          const ct = '</' + 'think>';
+          const ci = chunk.indexOf(ct);
+          if (ci >= 0) {
+            const tp = chunk.slice(0, ci);
+            const r = chunk.slice(ci + ct.length);
+            if (tp) { state.reasoning += tp; onChunk?.({ reasoning: tp }); }
+            thinkMode = 'content';
+            chunk = r;
           } else {
             state.reasoning += chunk;
             onChunk?.({ reasoning: chunk });
             chunk = '';
           }
         }
-        if (chunk) {
-          const openTag = '<' + 'think>';
-          const openIdx = chunk.indexOf(openTag);
-          if (openIdx >= 0) {
-            const beforeThink = chunk.slice(0, openIdx);
-            const afterOpen = chunk.slice(openIdx + openTag.length);
-            if (beforeThink) {
-              state.content += beforeThink;
-              onChunk?.({ content: beforeThink });
-            }
-            const closeTag2 = '</' + 'think>';
-            const closeIdx = afterOpen.indexOf(closeTag2);
-            if (closeIdx >= 0) {
-              const thinkPart = afterOpen.slice(0, closeIdx);
-              const rest = afterOpen.slice(closeIdx + closeTag2.length);
-              state.reasoning += thinkPart;
-              onChunk?.({ reasoning: thinkPart });
-              if (rest) {
-                state.content += rest;
-                onChunk?.({ content: rest });
-              }
+
+        // In 'content' mode: check for opening think tag (Pattern A restart)
+        if (thinkMode === 'content' && chunk) {
+          const ot = '<' + 'think>';
+          const ct = '</' + 'think>';
+          const oi = chunk.indexOf(ot);
+          if (oi >= 0) {
+            const before = chunk.slice(0, oi);
+            const after = chunk.slice(oi + ot.length);
+            if (before) { state.content += before; onChunk?.({ content: before }); }
+            const ci = after.indexOf(ct);
+            if (ci >= 0) {
+              const tp = after.slice(0, ci);
+              const r = after.slice(ci + ct.length);
+              if (tp) { state.reasoning += tp; onChunk?.({ reasoning: tp }); }
+              if (r) { state.content += r; onChunk?.({ content: r }); }
             } else {
-              state.reasoning += afterOpen;
-              onChunk?.({ reasoning: afterOpen });
-              thinkBuffer = ''; // mark we're inside <think>
+              state.reasoning += after;
+              onChunk?.({ reasoning: after });
+              thinkMode = 'thinking';
             }
-          } else {
-            state.content += chunk;
-            onChunk?.({ content: chunk });
+            chunk = '';
           }
+        }
+
+        // Normal content (all think tags resolved)
+        if (chunk) {
+          state.content += chunk;
+          onChunk?.({ content: chunk });
         }
       }
       if (delta.tool_calls) {
@@ -1107,16 +1160,32 @@ export async function callKrouterStream(
     })
     .filter((tc) => tc.name);
 
-  // Final cleanup: strip any remaining think tags from content (safety net
-  // in case the streaming parser missed a partial tag boundary).
-  const openTag = '<' + 'think>';
-  const closeTag = '</' + 'think>';
-  if (state.content.includes(openTag)) {
-    state.content = state.content.replace(
-      new RegExp(openTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + closeTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
-      ''
-    ).trim();
+  // Final cleanup: if detect mode is still active (never saw </think>), the
+  // buffered content was actually the answer — flush it as content.
+  if (thinkMode === 'detect' && detectBuffer) {
+    state.content += detectBuffer;
+    onChunk?.({ content: detectBuffer });
+    detectBuffer = '';
   }
+  // Strip any remaining think tags from content (safety net).
+  // Handles: ... ... , bare  (no opening tag),
+  // and escaped HTML versions (&lt;think&gt;...&lt;/think&gt;).
+  const ot = '<' + 'think>';
+  const ct = '</' + 'think>';
+  // Remove paired think blocks
+  state.content = state.content.replace(
+    new RegExp(ot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + ct.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+    ''
+  );
+  // Remove bare closing tag (no opening found)
+  state.content = state.content.replace(
+    new RegExp(ct.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+    ''
+  );
+  // Remove escaped versions
+  state.content = state.content.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/g, '').trim();
+  state.content = state.content.replace(/&lt;\/think&gt;/g, '').trim();
+  state.content = state.content.trim();
 
   return state;
 }

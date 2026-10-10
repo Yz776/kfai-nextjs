@@ -33,18 +33,25 @@ function escapeHtml(s: string): string {
 }
 
 function renderMd(md: string): string {
-  // Strip any remaining think tags first (safety net)
-  const openTag = '<' + 'think>';
-  const closeTag = '</' + 'think>';
+  // Strip ALL think tags — paired, bare closing, escaped HTML versions.
+  // This is the client-side safety net (server also strips them).
+  const ot = '<' + 'think>';
+  const ct = '</' + 'think>';
   let cleaned = md;
-  if (cleaned.includes(openTag)) {
-    cleaned = cleaned.replace(
-      new RegExp(openTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + closeTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
-      ''
-    ).trim();
-  }
-  // Also strip escaped think tags (&lt;think&gt;...&lt;/think&gt;)
-  cleaned = cleaned.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/g, '').trim();
+  // Remove paired:  dimikir ... 
+  cleaned = cleaned.replace(
+    new RegExp(ot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + ct.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+    ''
+  );
+  // Remove bare closing tag (no opening found)
+  cleaned = cleaned.replace(
+    new RegExp(ct.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+    ''
+  );
+  // Remove escaped versions
+  cleaned = cleaned.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/g, '');
+  cleaned = cleaned.replace(/&lt;\/think&gt;/g, '');
+  cleaned = cleaned.trim();
 
   let s = escapeHtml(cleaned);
   // Code blocks first (before other replacements)
