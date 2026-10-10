@@ -13,8 +13,8 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "KFAI — Agentic Assistant",
-  description: "KFAI — agentic AI assistant. Plans, uses tools, then answers. No fluff.",
-  keywords: ["KFAI", "agentic AI", "krouter", "AI assistant", "tool calling"],
+  description: "KFAI — agentic AI assistant with captcha-verified login and per-user isolated environments.",
+  keywords: ["KFAI", "agentic AI", "krouter", "AI assistant", "tool calling", "captcha auth"],
   authors: [{ name: "kangwifi" }],
 };
 

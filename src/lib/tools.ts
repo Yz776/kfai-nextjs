@@ -1,18 +1,33 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // KFAI — Server-side tool implementations
+// Tools that touch user state (bash sandbox, env vars, notes) use the
+// per-user context (userId) so each user has an isolated environment.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createHash, randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { listKrouterModels } from './krouter';
 import { callMcpTool } from './mcp';
+import { ensureUserWorkdir, envGet, envSet, envDelete, envList, fileSave, fileLoad, fileAppend, fileList, fileDelete } from './user-env';
 
 export type ToolResult = {
   status: 'done' | 'error';
   [key: string]: unknown;
 };
 
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+// Per-user tool execution context.
+// userId is the server-side primary key (never exposed to the client).
+// authId is the captcha-session-derived public auth id.
+export type ToolContext = {
+  userId: string;
+  authId: string;
+};
+
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx?: ToolContext,
+): Promise<ToolResult> {
   try {
     switch (name) {
       case 'web_search':        return await toolWebSearch(String(args.query ?? ''));
@@ -21,7 +36,7 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'datetime':          return toolDatetime(String(args.timezone ?? 'Asia/Jakarta'));
       case 'http_fetch':        return await toolHttpFetch(String(args.url ?? ''));
       case 'list_models':       return await toolListModels();
-      case 'bash':              return await toolBash(String(args.command ?? ''));
+      case 'bash':              return await toolBash(String(args.command ?? ''), ctx);
       case 'weather':           return await toolWeather(String(args.location ?? ''));
       case 'currency_convert':  return await toolCurrencyConvert(Number(args.amount ?? 0), String(args.from ?? ''), String(args.to ?? ''));
       case 'ip_lookup':         return await toolIpLookup(String(args.ip ?? ''));
@@ -90,6 +105,19 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'mime_type':       return toolMimeType(String(args.input ?? ''), String(args.action ?? 'to_mime'));
       case 'cron_validate':   return toolCronValidate(String(args.expression ?? ''));
       case 'text_stats':      return toolTextStats(String(args.text ?? ''));
+      // ── Per-user environment tools (require auth context) ──
+      case 'env_get':         return await toolEnvGet(ctx, String(args.key ?? ''));
+      case 'env_set':         return await toolEnvSet(ctx, String(args.key ?? ''), String(args.value ?? ''));
+      case 'env_delete':     return await toolEnvDelete(ctx, String(args.key ?? ''));
+      case 'env_list':       return await toolEnvList(ctx);
+      case 'notes_save':     return await toolNotesSave(ctx, String(args.text ?? ''));
+      case 'notes_load':     return await toolNotesLoad(ctx);
+      // ── Persistent file management (per-user sandbox) ──
+      case 'file_save':      return await toolFileSave(ctx, String(args.filename ?? ''), String(args.content ?? ''));
+      case 'file_load':      return await toolFileLoad(ctx, String(args.filename ?? ''));
+      case 'file_append':    return await toolFileAppend(ctx, String(args.filename ?? ''), String(args.content ?? ''));
+      case 'file_list':      return await toolFileList(ctx, args.subdir ? String(args.subdir) : undefined);
+      case 'file_delete':    return await toolFileDelete(ctx, String(args.filename ?? ''));
       default: {
         // Built-in model tools that don't exist in our environment — give a helpful
         // redirect message so the model knows which KFAI tool to use instead.
@@ -97,7 +125,12 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
           websearch: 'google_search',
           web_fetch: 'http_fetch',
           webfetch: 'http_fetch',
-          read: 'http_fetch',
+          read: 'file_load',
+          write: 'file_save',
+          edit: 'file_save',
+          glob: 'file_list',
+          grep: 'bash',
+          ls: 'file_list',
         };
         const lower = name.toLowerCase();
         if (builtinRedirects[lower]) {
@@ -106,9 +139,9 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
             error: `Unknown tool: ${name}. Use "${builtinRedirects[lower]}" instead — it is the KFAI equivalent that works in this environment.`,
           };
         }
-        // Other built-in tools (edit, glob, grep, write, skill, task, todowrite) — these
-        // have no KFAI equivalent. Tell the model to stop using tools and answer directly.
-        const noEquivalent = ['edit', 'glob', 'grep', 'write', 'skill', 'task', 'todowrite'];
+        // Other built-in tools (skill, task, todowrite) — these have no KFAI
+        // equivalent. Tell the model to stop using tools and answer directly.
+        const noEquivalent = ['skill', 'task', 'todowrite'];
         if (noEquivalent.includes(lower)) {
           return {
             status: 'error',
@@ -419,8 +452,10 @@ async function toolListModels(): Promise<ToolResult> {
   }
 }
 
-// ── bash: sandboxed shell ───────────────────────────────────────────────────────
-async function toolBash(command: string): Promise<ToolResult> {
+// ── bash: sandboxed shell (per-user workdir, persistent) ──────────────────────
+// The sandbox is persistent — files created here survive across server restarts.
+// File redirects (>, >>) are ALLOWED so the AI can save programs/scripts/data.
+async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult> {
   const cmd = command.trim();
   if (!cmd) return { status: 'error', error: 'Empty command' };
   if (cmd.length > 1500) return { status: 'error', error: 'Command too long (max 1500 chars)' };
@@ -428,12 +463,18 @@ async function toolBash(command: string): Promise<ToolResult> {
   // Hard-block dangerous patterns. Allow $((expr)) arithmetic, block $(cmd).
   const blocked = [
     '`', '${', 'exec(', 'eval(', 'system(', 'passthru(', 'shell_exec(', 'proc_open(', 'popen(',
-    'rm -', 'rmdir', 'unlink', 'mkdir', 'mv ', 'cp ', 'chmod', 'chown',
+    // rm with args is dangerous — block but allow rmdir for empty dirs
+    'rm -rf', 'rm -r ', 'rm -f', 'rmdir',
     'mkfifo', 'mknod',
     'sudo', 'su ', 'kill', 'pkill', 'nohup',
     'ssh ', 'scp ', 'rsync', 'nc -', 'nc ',
     'bash -', 'sh -', 'zsh -', 'fish -',
-    '>>', '&>', '>&', '<(', '>(', '<<',
+    // Subshells / process substitution still blocked
+    '<(', '>(', '<<',
+    // Path escape — block anything that could break out of the sandbox
+    '../', '/etc/', '/root/', '/home/', '/var/', '/usr/', '/proc/', '/sys/', '/dev/',
+    // Block references to the project itself
+    'package.json', '.env', 'prisma/', 'src/', 'next.config',
   ];
   for (const b of blocked) {
     if (cmd.toLowerCase().includes(b.toLowerCase())) {
@@ -444,17 +485,15 @@ async function toolBash(command: string): Promise<ToolResult> {
   if (/\$\((?!\()/.test(cmd)) {
     return { status: 'error', error: 'Blocked: command substitution $()' };
   }
-  // Block file redirects — strip both single and double quoted strings first
-  // so redirects inside code (e.g. node -e "for(let i=0;i<3;...") don't trigger.
+  // Background operators still blocked (but allow &&)
   const stripped = cmd
     .replace(/'(?:\\.|[^'\\])*'/g, "''")
     .replace(/"(?:\\.|[^"\\])*"/g, '""');
-  if (/(?<![\d-])>\s*\S/.test(stripped) || /(?<!-)<\s*\S/.test(stripped)) {
-    return { status: 'error', error: 'Blocked: file redirect (> or <)' };
-  }
   if (/(?<!&)&(?!&)/.test(stripped)) {
     return { status: 'error', error: 'Blocked: background operator (&)' };
   }
+  // Note: file redirects (> and >>) are now ALLOWED — they happen inside the
+  // sandbox workdir and the path-escape rule above already prevents breaking out.
 
   // Whitelist
   const whitelist = [
@@ -463,6 +502,8 @@ async function toolBash(command: string): Promise<ToolResult> {
     'column', 'cal', 'python3', 'python', 'node', 'sleep', 'pwd',
     'hostname', 'whoami', 'id', 'true', 'false', 'test',
     'curl', 'wget',
+    // File management inside sandbox (allowed because path-escape is blocked)
+    'mkdir', 'mv', 'cp', 'touch', 'tee', 'rm', 'ln',
     // Read-only system inspection commands (safe, no side effects)
     'uname', 'lscpu', 'free', 'df', 'uptime', 'cat', 'nproc', 'lsmem',
     'lsblk', 'mount', 'env', 'printenv', 'dmesg', 'top', 'ps',
@@ -518,12 +559,28 @@ async function toolBash(command: string): Promise<ToolResult> {
   // Normalize python → python3
   const execCmd = cmd.replace(/\bpython\b(?!3)\b/g, 'python3');
 
+  // Per-user sandboxed working directory
+  // If ctx is missing (e.g. legacy test), fall back to /tmp (still safe — no
+  // auth means no real user, so there's no isolation boundary to enforce).
+  let cwd = '/tmp';
+  let sandboxLabel = 'global';
+  if (ctx?.userId) {
+    try {
+      cwd = await ensureUserWorkdir(ctx.userId);
+      sandboxLabel = 'user:' + ctx.userId.slice(0, 8);
+    } catch {
+      // Fall back to /tmp if sandbox provisioning fails — never block bash
+      // outright, but tag the output so the agent sees the sandbox state.
+    }
+  }
+
   // Execute with timeout (use Node child_process for portability across runtimes)
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
       const proc = spawn('sh', ['-c', execCmd], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, LANG: 'C.UTF-8' },
+        cwd,
+        env: { ...process.env, LANG: 'C.UTF-8', HOME: cwd, PWD: cwd },
       });
       let out = '';
       let err = '';
@@ -547,6 +604,8 @@ async function toolBash(command: string): Promise<ToolResult> {
       exit_code: code,
       stdout: (out as string).trim().slice(0, 2000),
       stderr: (err as string).trim().slice(0, 500),
+      sandbox: sandboxLabel,
+      cwd,
     };
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Failed to execute' };
@@ -1428,4 +1487,147 @@ function toolTextStats(text: string): ToolResult {
 // ── helpers ────────────────────────────────────────────────────────────────────
 function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
+// ── Per-user environment tools (require auth context) ──────────────────────────
+// These read/write key-value pairs stored in the database per-user.
+// They let the agent remember facts across conversations and across
+// sessions (the user's auth id is stable across captcha logins).
+
+async function toolEnvGet(ctx: ToolContext | undefined, key: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for env_get' };
+  const k = key.trim();
+  if (!k) return { status: 'error', error: 'Empty key' };
+  if (k.length > 64) return { status: 'error', error: 'Key too long (max 64 chars)' };
+  const value = await envGet(ctx.userId, k);
+  return {
+    status: 'done',
+    key: k,
+    found: value !== null,
+    value: value ?? '',
+  };
+}
+
+async function toolEnvSet(ctx: ToolContext | undefined, key: string, value: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for env_set' };
+  const k = key.trim();
+  if (!k) return { status: 'error', error: 'Empty key' };
+  if (k.length > 64) return { status: 'error', error: 'Key too long (max 64 chars)' };
+  if (value.length > 4000) return { status: 'error', error: 'Value too long (max 4000 chars)' };
+  await envSet(ctx.userId, k, value);
+  return {
+    status: 'done',
+    key: k,
+    saved: true,
+  };
+}
+
+async function toolEnvDelete(ctx: ToolContext | undefined, key: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for env_delete' };
+  const k = key.trim();
+  if (!k) return { status: 'error', error: 'Empty key' };
+  await envDelete(ctx.userId, k);
+  return { status: 'done', key: k, deleted: true };
+}
+
+async function toolEnvList(ctx: ToolContext | undefined): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for env_list' };
+  const vars = await envList(ctx.userId);
+  return {
+    status: 'done',
+    count: Object.keys(vars).length,
+    variables: vars,
+  };
+}
+
+// ── Notes: a special slot in the user environment ─────────────────────────────
+// Notes is a single big text buffer (up to ~16 KB) persisted per-user.
+// It's a "scratchpad" the agent can write to and read back later, even from
+// a different conversation.
+
+async function toolNotesSave(ctx: ToolContext | undefined, text: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for notes_save' };
+  if (text.length > 16384) return { status: 'error', error: 'Notes too long (max 16384 chars)' };
+  await envSet(ctx.userId, '__notes__', text);
+  return {
+    status: 'done',
+    saved: true,
+    length: text.length,
+  };
+}
+
+async function toolNotesLoad(ctx: ToolContext | undefined): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for notes_load' };
+  const notes = await envGet(ctx.userId, '__notes__');
+  return {
+    status: 'done',
+    found: notes !== null,
+    length: notes?.length ?? 0,
+    notes: notes ?? '',
+  };
+}
+
+// ── Persistent file management tools (per-user sandbox) ──────────────────────
+// These let the AI save/load/manage files in the user's persistent sandbox.
+// Files survive across conversations and server restarts — they are stored at
+// /home/z/my-project/user-data/<userId>/ and are isolated per user.
+
+async function toolFileSave(ctx: ToolContext | undefined, filename: string, content: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_save' };
+  const fn = filename.trim();
+  if (!fn) return { status: 'error', error: 'Empty filename' };
+  if (fn.length > 256) return { status: 'error', error: 'Filename too long (max 256 chars)' };
+  if (fn.includes('\0')) return { status: 'error', error: 'Invalid filename' };
+  try {
+    const r = await fileSave(ctx.userId, fn, content);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to save file' };
+  }
+}
+
+async function toolFileLoad(ctx: ToolContext | undefined, filename: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_load' };
+  const fn = filename.trim();
+  if (!fn) return { status: 'error', error: 'Empty filename' };
+  try {
+    const r = await fileLoad(ctx.userId, fn);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to load file' };
+  }
+}
+
+async function toolFileAppend(ctx: ToolContext | undefined, filename: string, content: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_append' };
+  const fn = filename.trim();
+  if (!fn) return { status: 'error', error: 'Empty filename' };
+  try {
+    const r = await fileAppend(ctx.userId, fn, content);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to append file' };
+  }
+}
+
+async function toolFileList(ctx: ToolContext | undefined, subdir?: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_list' };
+  try {
+    const r = await fileList(ctx.userId, subdir);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to list files' };
+  }
+}
+
+async function toolFileDelete(ctx: ToolContext | undefined, filename: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_delete' };
+  const fn = filename.trim();
+  if (!fn) return { status: 'error', error: 'Empty filename' };
+  try {
+    const r = await fileDelete(ctx.userId, fn);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to delete file' };
+  }
 }

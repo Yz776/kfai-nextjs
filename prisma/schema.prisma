@@ -1,8 +1,5 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// KFAI — Multi-user Prisma schema
+// Captcha-session = auth ID. Each user has isolated environment + persisted history.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,20 +10,134 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ── User (created on first captcha solve) ────────────────────────────────────
+// authId is derived from the captcha challenge that created the user — the
+// captcha session IS the auth id.
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  authId      String   @unique // Captcha-session-derived auth id (public)
+  displayName String?
+  createdAt   DateTime @default(now())
+  lastSeenAt  DateTime @updatedAt
+
+  sessions      Session[]
+  conversations Conversation[]
+  environment   UserEnvironment?
+  messages      Message[]
 }
 
-model Post {
+// ── Session (one per browser tab / device) ───────────────────────────────────
+// STRICT INVARIANT: one active session per IP. If a new login happens from
+// the same IP, all previous sessions for that IP are revoked automatically.
+// This prevents account sharing / concurrent sessions from different browsers.
+model Session {
+  id                String   @id @default(cuid())
+  userId            String
+  token             String   @unique // Server-issued bearer token
+  userAgent         String?
+  ipAddr            String?  // Enforced: 1 IP = 1 active session
+  deviceFingerprint String?  // Hash of client-side device fingerprint (canvas, webgl, audio, fonts, etc.)
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime
+  lastSeenAt        DateTime @default(now())
+  revoked           Boolean  @default(false)
+  revokeReason      String?  // e.g. 'ip_replacement', 'device_mismatch', 'manual_logout'
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([ipAddr])
+  @@index([deviceFingerprint])
+}
+
+// ── Captcha challenge (short-lived, single-use) ──────────────────────────────
+// Solving a captcha either logs an existing user back in (if authId supplied)
+// or creates a brand new user. Either way the captcha session becomes the auth id.
+model CaptchaChallenge {
+  id          String   @id @default(cuid())
+  challengeId String   @unique // Public id sent to client
+  answerHash  String            // sha256(answer + salt) — never store raw answer
+  salt        String
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  solved      Boolean  @default(false)
+  consumed    Boolean  @default(false) // used for auth (cannot replay)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+}
+
+// ── Conversation (a chat thread per user) ────────────────────────────────────
+model Conversation {
   id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
+  userId    String
+  title     String   @default("New conversation")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId])
+}
+
+// ── Message (single turn in a conversation) ──────────────────────────────────
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  userId         String // denormalized for fast isolation queries
+  role           String   // user | assistant | system | tool
+  content        String
+  toolCalls      String?  // JSON.stringify(tool_calls) if any
+  toolCallId     String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([userId])
+}
+
+// ── Per-user environment (sandbox state, variables, prefs) ───────────────────
+model UserEnvironment {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  variables String   @default("{}") // JSON map of env vars (e.g. notes, scratch)
+  workdir   String?  // sandboxed working directory path on disk
+  prefs     String   @default("{}") // JSON of preferences (model, theme, etc.)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Rate limit / abuse tracking ──────────────────────────────────────────────
+// Tracks per-IP counters for captcha fetches, login attempts, and chat requests.
+// Used by lib/anti-abuse.ts to enforce hard rate limits.
+model RateLimit {
+  id        String   @id @default(cuid())
+  ipAddr    String
+  action    String   // 'captcha_fetch' | 'login_attempt' | 'chat' | 'device_check'
+  count     Int      @default(0)
+  windowStart DateTime @default(now())
+  lastAt    DateTime @default(now())
+
+  @@unique([ipAddr, action])
+  @@index([ipAddr])
+}
+
+// ── Known device fingerprints (registered at first login) ───────────────────
+// A device fingerprint is a hash of canvas + webgl + audio + fonts + screen +
+// timezone + plugins. It's used as a SECOND factor beyond IP — if the device
+// changes between requests on the same session, the session is revoked.
+model DeviceFingerprint {
+  id           String   @id @default(cuid())
+  fingerprint  String   @unique // sha256 hash
+  userId       String
+  firstSeenAt  DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+  ipAddrs      String   @default("[]") // JSON array of historical IPs
+  rawSignals   String   @default("{}") // JSON of signals used to compute hash (for forensics)
+
+  @@index([userId])
 }

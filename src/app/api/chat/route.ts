@@ -1,29 +1,14 @@
 // KFAI — /api/chat — Server-side objective-driven agentic loop with SSE streaming.
 //
-// Browser POSTs { messages }. Server runs the agentic loop with a fixed
-// model. The loop only stops when:
-//   - the model calls `task_complete` (objective achieved), OR
-//   - the model produces final text with no further tool calls (natural stop), OR
-//   - max iterations reached (timeout safety net).
+// CHANGES vs original:
+//   - Requires Authorization: Bearer <sessionToken>
+//   - Loads conversation history from DB (filtered by userId — isolation enforced)
+//   - Persists every message (user + assistant + tool) to DB
+//   - Passes { userId, authId } ctx to executeTool so bash/env/notes tools
+//     operate in the user's own sandbox
+//   - Auto-creates conversation if conversationId not supplied
 //
-// Special tool handling:
-//   - plan()       → emits a `plan` SSE event (shown as a plan card in UI)
-//   - reflect()    → emits a `reflect` SSE event (shown as a reflection card)
-//   - task_complete() → emits a `task_complete` SSE event AND stops the loop.
-//
-// SSE event types:
-//   { type: 'start', iter: 0 }
-//   { type: 'iter_start', iter }
-//   { type: 'thinking', text }
-//   { type: 'content', text }
-//   { type: 'tool_call', id, name, args }
-//   { type: 'tool_result', id, name, result, status }
-//   { type: 'plan', goal, steps }
-//   { type: 'reflect', progress, assessment, next }
-//   { type: 'task_complete', summary, confidence }
-//   { type: 'done', iter, reason }
-//   { type: 'error', message }
-//   { type: 'end' }
+// SSE event types unchanged from the original implementation.
 
 import { NextRequest } from 'next/server';
 import {
@@ -31,14 +16,46 @@ import {
   type ChatMessage,
 } from '@/lib/krouter';
 import { executeTool } from '@/lib/tools';
+import { verifyToken, bearerFromHeaders, fingerprintFromHeaders, type AuthContext } from '@/lib/auth';
+import { extractIp, isBotUserAgent, checkRateLimit } from '@/lib/anti-abuse';
+import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 const MAX_ITERS = 12;
+const MAX_HISTORY = 20;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  // ── Bot UA check ──────────────────────────────────────────────────────────
+  if (isBotUserAgent(req.headers.get('user-agent'))) {
+    return new Response('Bad Gateway', { status: 502 });
+  }
+
+  // ── Rate limit chat per IP ────────────────────────────────────────────────
+  const ip = extractIp(req.headers);
+  const rl = await checkRateLimit(ip, 'chat');
+  if (!rl.ok) {
+    return Response.json(
+      { error: 'Too many chat requests. Try again later.' },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(rl.retryAfterSec) },
+      },
+    );
+  }
+
+  // ── Auth gate: verify token + IP + device fingerprint ────────────────────
+  const auth = await verifyToken(
+    bearerFromHeaders(req.headers),
+    ip,
+    fingerprintFromHeaders(req.headers) || undefined,
+  );
+  if (!auth) {
+    return Response.json({ error: 'unauthorized', reason: 'invalid or missing token' }, { status: 401 });
+  }
+
   // Parse body
   let body: any;
   try {
@@ -47,24 +64,70 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const messages: ChatMessage[] = Array.isArray(body.messages) ? body.messages : [];
-  if (messages.length === 0) {
-    return Response.json({ error: 'No messages provided' }, { status: 400 });
-  }
-  // Cap to last 20 messages
-  const trimmed = messages.slice(-20);
+  const userText: string = typeof body.message === 'string' ? body.message : '';
+  let conversationId: string | null = typeof body.conversationId === 'string' ? body.conversationId : null;
 
-  // Sanitize messages
+  if (!userText.trim()) {
+    return Response.json({ error: 'Empty message' }, { status: 400 });
+  }
+  if (userText.length > 20000) {
+    return Response.json({ error: 'Message too long (max 20000 chars)' }, { status: 400 });
+  }
+
+  // ── Resolve or create conversation ──────────────────────────────────────────
+  let conversation;
+  if (conversationId) {
+    conversation = await db.conversation.findFirst({
+      where: { id: conversationId, userId: auth.userId },
+    });
+    if (!conversation) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
+  } else {
+    // Auto-create a new conversation with a derived title from the first message
+    const title = deriveTitle(userText);
+    conversation = await db.conversation.create({
+      data: {
+        userId: auth.userId,
+        title,
+      },
+    });
+    conversationId = conversation.id;
+  }
+
+  // ── Load history from DB (only this user's messages, ordered) ──────────────
+  const dbMsgs = await db.message.findMany({
+    where: { conversationId: conversation.id },
+    orderBy: { createdAt: 'asc' },
+    take: MAX_HISTORY,
+  });
+
+  // Build the chat history that the model will see.
+  // We only forward user / assistant / tool messages (skip system; we prepend it).
   const clean: ChatMessage[] = [];
-  for (const m of trimmed) {
-    const role = m.role;
-    if (!['user', 'assistant', 'system', 'tool'].includes(role)) continue;
-    const content = typeof m.content === 'string' ? m.content.slice(0, 20000) : '';
-    clean.push({ role: role as ChatMessage['role'], content });
+  for (const m of dbMsgs) {
+    if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool') continue;
+    const content = m.content || '';
+    const msg: ChatMessage = { role: m.role as ChatMessage['role'], content };
+    if (m.toolCalls) {
+      try {
+        msg.tool_calls = JSON.parse(m.toolCalls);
+      } catch { /* ignore */ }
+    }
+    if (m.toolCallId) msg.tool_call_id = m.toolCallId;
+    clean.push(msg);
   }
-  if (clean.length === 0) {
-    return Response.json({ error: 'Empty message history' }, { status: 400 });
-  }
+
+  // Append the current user message (and persist it)
+  const userMsg = await db.message.create({
+    data: {
+      conversationId: conversation.id,
+      userId: auth.userId,
+      role: 'user',
+      content: userText,
+    },
+  });
+  clean.push({ role: 'user', content: userText });
 
   // Always use the default model — the client does not get to choose.
   const model = DEFAULT_MODEL;
@@ -81,6 +144,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const closeStream = () => abortCtrl.abort();
   req.signal.addEventListener('abort', closeStream);
 
+  // Send conversationId as the very first event so the client can update its URL
   const stream = new ReadableStream({
     async start(controller) {
       const send = (obj: Record<string, unknown>) => {
@@ -91,13 +155,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
       };
 
-      send({ type: 'start', iter: 0 });
+      send({ type: 'start', iter: 0, conversationId: conversation!.id });
+      // Bump conversation updatedAt
+      try { await db.conversation.update({ where: { id: conversation!.id }, data: { updatedAt: new Date() } }); } catch {}
 
       let finalText = '';
       let hadError = false;
       let objectiveComplete = false;
-      let consecutiveUnknownTool = 0; // track repeated "Unknown tool" errors
-      let nudgeInjected = false; // only inject the nudge once
+      let consecutiveUnknownTool = 0;
+      let nudgeInjected = false;
+      let lastAssistantId: string | null = null;
 
       for (let iter = 1; iter <= MAX_ITERS; iter++) {
         if (abortCtrl.signal.aborted) break;
@@ -127,7 +194,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           break;
         }
 
-        // Append assistant message to history (with tool_calls if any)
+        // Persist assistant message to DB
         const assistantMsg: ChatMessage = { role: 'assistant', content: result.content || '' };
         if (result.tool_calls.length > 0) {
           assistantMsg.tool_calls = result.tool_calls.map((tc) => ({
@@ -137,6 +204,17 @@ export async function POST(req: NextRequest): Promise<Response> {
           }));
         }
         allMessages.push(assistantMsg);
+
+        const persistedAssistant = await db.message.create({
+          data: {
+            conversationId: conversation!.id,
+            userId: auth.userId,
+            role: 'assistant',
+            content: result.content || '',
+            toolCalls: assistantMsg.tool_calls ? JSON.stringify(assistantMsg.tool_calls) : null,
+          },
+        });
+        lastAssistantId = persistedAssistant.id;
 
         // No tool calls → natural stop (model produced final text)
         if (result.tool_calls.length === 0) {
@@ -153,7 +231,19 @@ export async function POST(req: NextRequest): Promise<Response> {
           if (abortCtrl.signal.aborted) break;
           send({ type: 'tool_call', id: tc.id, name: tc.name, args: tc.args, iter });
 
-          const toolResult = await executeTool(tc.name, tc.args);
+          // ── Pass per-user context (userId + authId) to the tool ──
+          const toolResult = await executeTool(tc.name, tc.args, { userId: auth.userId, authId: auth.authId } as AuthContext);
+
+          // Persist tool message so history stays consistent with the model
+          await db.message.create({
+            data: {
+              conversationId: conversation!.id,
+              userId: auth.userId,
+              role: 'tool',
+              content: JSON.stringify(toolResult),
+              toolCallId: tc.id,
+            },
+          });
 
           // Track "Unknown tool" errors so we can nudge the model.
           const isUnknown =
@@ -204,8 +294,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           });
         }
 
-        // Update consecutive-unknown counter. If model keeps calling tools
-        // that don't exist, inject a one-time nudge to answer directly.
+        // Update consecutive-unknown counter.
         if (iterHadUnknownTool) {
           consecutiveUnknownTool++;
           if (consecutiveUnknownTool >= 2 && !nudgeInjected) {
@@ -213,14 +302,13 @@ export async function POST(req: NextRequest): Promise<Response> {
             allMessages.push({
               role: 'system',
               content:
-                'You keep trying to call tools that are NOT available in this environment (they returned "Unknown tool"). Stop using your built-in tools (websearch, webfetch, glob, grep, edit, read, write, skill, task, todowrite). The ONLY tools that work here are: plan, reflect, task_complete, google_search, web_search, calculator, datetime, http_fetch, list_models, bash, weather, currency_convert, ip_lookup, uuid, hash, timestamp_convert, word_count, json_format, base64, color_convert, krouter_fetch, krouter_status, krouter_usage, krouter_recent_logs, krouter_list_models, krouter_list_providers, krouter_list_virtual_keys, krouter_list_prompts, krouter_model_health, krouter_cache, krouter_system, krouter_proxy_pool. If you have enough information to answer, STOP calling tools and write your final answer directly in the content stream. For simple questions about people, definitions, or general knowledge, just answer from your training data — no tools needed.',
+                'You keep trying to call tools that are NOT available in this environment. The ONLY tools that work here are: plan, reflect, task_complete, google_search, web_search, calculator, datetime, http_fetch, list_models, bash, weather, currency_convert, ip_lookup, uuid, hash, timestamp_convert, word_count, json_format, base64, color_convert, env_get, env_set, env_delete, env_list, notes_save, notes_load, krouter_fetch, krouter_status, krouter_usage, krouter_recent_logs, krouter_list_models, krouter_list_providers, krouter_list_virtual_keys, krouter_list_prompts, krouter_model_health, krouter_cache, krouter_system, krouter_proxy_pool. If you have enough information to answer, STOP calling tools and write your final answer directly in the content stream.',
             });
           }
         } else {
           consecutiveUnknownTool = 0;
         }
 
-        // If the model called task_complete, stop the loop — objective achieved.
         if (sawTaskComplete) {
           finalText = result.content || '';
           objectiveComplete = true;
@@ -229,26 +317,31 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
       }
 
-      // ── Loop finished without producing any final text ──────────────────────
-      // This happens when the model kept calling tools and hit max iterations
-      // without ever giving a content answer. Send a fallback so the user sees
-      // something rather than a blank message.
+      // ── Fallback if loop ran out without producing text ──────────────────────
       if (!hadError && !objectiveComplete && !finalText && !abortCtrl.signal.aborted) {
         const fallback =
           'Maaf, saya tidak bisa menyelesaikan permintaan ini setelah beberapa percobaan. ' +
-          'Model terus mencoba tools yang tidak tersedia. Silakan coba pertanyaan yang lebih spesifik, ' +
-          'atau refresh halaman dan coba lagi.';
+          'Silakan coba pertanyaan yang lebih spesifik.';
         finalText = fallback;
+        // Persist fallback as assistant message if there isn't one yet
+        if (lastAssistantId === null) {
+          await db.message.create({
+            data: {
+              conversationId: conversation!.id,
+              userId: auth.userId,
+              role: 'assistant',
+              content: finalText,
+            },
+          });
+        }
         send({ type: 'content', text: fallback, iter: MAX_ITERS });
         send({ type: 'done', iter: MAX_ITERS, reason: 'fallback_after_max_iters' });
       }
 
-      if (!hadError && !objectiveComplete && abortCtrl.signal.aborted) {
-        // Client disconnected — keep what we have
-      }
       if (!hadError) {
         send({
           type: 'end',
+          conversationId: conversation!.id,
           final_text: finalText,
           objective_complete: objectiveComplete,
           reached_max_iters: !objectiveComplete && !abortCtrl.signal.aborted,
@@ -274,4 +367,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       'X-Accel-Buffering': 'no',
     },
   });
+}
+
+function deriveTitle(text: string): string {
+  const t = text.trim().replace(/\s+/g, ' ');
+  if (t.length <= 60) return t;
+  return t.slice(0, 57) + '…';
 }
