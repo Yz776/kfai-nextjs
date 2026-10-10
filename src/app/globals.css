@@ -300,6 +300,69 @@ body {
   max-width: 100%;
 }
 
+/* ── Process wrapper (collapsible — contains thinking + all tool cards) ──────── */
+.kfai-process {
+  border: 1px solid #1f1f23;
+  border-radius: 6px;
+  background: #0d0d0f;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.kfai-process-head {
+  cursor: pointer;
+  padding: 5px 12px;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  color: #52525b;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.kfai-process-head::-webkit-details-marker {
+  display: none;
+}
+
+.kfai-process-head::before {
+  content: "›";
+  color: #71717a;
+  font-weight: 700;
+  transition: transform 150ms;
+  display: inline-block;
+}
+
+.kfai-process[open] > .kfai-process-head::before {
+  transform: rotate(90deg);
+}
+
+.kfai-process-glyph {
+  color: #71717a;
+  font-weight: 600;
+}
+
+.kfai-process-label {
+  color: #71717a;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+}
+
+.kfai-process-meta {
+  margin-left: auto;
+  color: #52525b;
+  font-size: 10px;
+}
+
+.kfai-process-body {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* ── Thinking ────────────────────────────────────────────────────────────────── */
 .kfai-thinking {
   border: 1px solid #1f1f23;

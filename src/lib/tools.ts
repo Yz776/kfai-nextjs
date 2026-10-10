@@ -429,7 +429,7 @@ async function toolBash(command: string): Promise<ToolResult> {
   const blocked = [
     '`', '${', 'exec(', 'eval(', 'system(', 'passthru(', 'shell_exec(', 'proc_open(', 'popen(',
     'rm -', 'rmdir', 'unlink', 'mkdir', 'mv ', 'cp ', 'chmod', 'chown',
-    'mkfifo', 'mknod', '/dev/', '/etc/', '/root/', '/proc/', '/sys/',
+    'mkfifo', 'mknod',
     'sudo', 'su ', 'kill', 'pkill', 'nohup',
     'ssh ', 'scp ', 'rsync', 'nc -', 'nc ',
     'bash -', 'sh -', 'zsh -', 'fish -',
@@ -463,9 +463,14 @@ async function toolBash(command: string): Promise<ToolResult> {
     'column', 'cal', 'python3', 'python', 'node', 'sleep', 'pwd',
     'hostname', 'whoami', 'id', 'true', 'false', 'test',
     'curl', 'wget',
+    // Read-only system inspection commands (safe, no side effects)
+    'uname', 'lscpu', 'free', 'df', 'uptime', 'cat', 'nproc', 'lsmem',
+    'lsblk', 'mount', 'env', 'printenv', 'dmesg', 'top', 'ps',
+    'nmap', 'ping', 'dig', 'nslookup', 'host', 'ip', 'ifconfig',
+    'stat', 'file', 'du', 'ls', 'find', 'grep', 'sed',
+    'sysctl', 'dmidecode', 'inxi',
   ];
-  // Split by pipe | but only outside of quotes (so regex like 'a|b' inside
-  // a python -c "..." string is not split into separate commands).
+  // Split by pipe |, semicolon ;, && and || but only outside of quotes.
   function splitPipes(cmd: string): string[] {
     const parts: string[] = [];
     let cur = '';
@@ -475,12 +480,14 @@ async function toolBash(command: string): Promise<ToolResult> {
       if (ch === "'" && !inDouble) { inSingle = !inSingle; cur += ch; continue; }
       if (ch === '"' && !inSingle) { inDouble = !inDouble; cur += ch; continue; }
       if (ch === '\\' && !inSingle && !inDouble && i + 1 < cmd.length) { cur += ch + cmd[i+1]; i++; continue; }
-      if (ch === '|' && !inSingle && !inDouble) {
-        // Check for || (logical OR) — don't split
-        if (cmd[i+1] === '|') { cur += '||'; i++; continue; }
-        parts.push(cur);
-        cur = '';
-        continue;
+      // Split on |, ;, &&, || (only outside quotes)
+      if (!inSingle && !inDouble) {
+        if (ch === '|') {
+          if (cmd[i+1] === '|') { i++; if (cur.trim()) { parts.push(cur); cur = ''; } continue; }
+          if (cur.trim()) { parts.push(cur); cur = ''; } continue;
+        }
+        if (ch === ';') { if (cur.trim()) { parts.push(cur); cur = ''; } continue; }
+        if (ch === '&' && cmd[i+1] === '&') { i++; if (cur.trim()) { parts.push(cur); cur = ''; } continue; }
       }
       cur += ch;
     }

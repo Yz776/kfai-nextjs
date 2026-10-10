@@ -58,13 +58,14 @@ function renderMd(md: string): string {
 // ── Render state ───────────────────────────────────────────────────────────────
 type RenderState = {
   curMsg: HTMLDivElement | null;
+  processEl: HTMLDetailsElement | null;   // wrapper that contains thinking + all tool cards
+  processBody: HTMLDivElement | null;      // div inside processEl where children are appended
   thinkingEl: HTMLDetailsElement | null;
   thinkingBody: HTMLDivElement | null;
   textEl: HTMLDivElement | null;
   textRaw: string;
-  // Track all collapsible tool cards + thinking blocks created in this turn
-  // so we can auto-collapse them when the answer finalizes.
   toolCards: HTMLDetailsElement[];
+  toolCount: number;
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -79,7 +80,8 @@ export default function Page() {
   const threadRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const renderRef = useRef<RenderState>({
-    curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [],
+    curMsg: null, processEl: null, processBody: null,
+    thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [], toolCount: 0,
   });
 
   const scrollToBottom = useCallback(() => {
@@ -91,8 +93,17 @@ export default function Page() {
     if (renderRef.current.curMsg) return renderRef.current.curMsg;
     const el = document.createElement("div");
     el.className = "kfai-msg kfai-assistant";
+    // Create the process wrapper — ALL thinking + tool cards go inside it.
+    // The final answer text stays OUTSIDE (always visible).
+    const proc = document.createElement("details");
+    proc.className = "kfai-process";
+    proc.open = true; // open during streaming so user sees progress
+    proc.innerHTML = `<summary class="kfai-process-head"><span class="kfai-process-glyph">▶</span><span class="kfai-process-label">process</span><span class="kfai-process-meta">streaming…</span></summary><div class="kfai-process-body"></div>`;
+    el.appendChild(proc);
     threadRef.current?.appendChild(el);
     renderRef.current.curMsg = el;
+    renderRef.current.processEl = proc;
+    renderRef.current.processBody = proc.querySelector(".kfai-process-body");
     return el;
   }, []);
 
@@ -194,10 +205,19 @@ export default function Page() {
   }, []);
 
   // ── Collapse all tool cards + thinking blocks (auto-clean after answer) ──────
-  // Called when the SSE stream ends (done/end/error). All tool cards and
-  // the thinking block are auto-collapsed so the UI shows only the final
-  // answer cleanly. User can click any card to re-expand and inspect.
   const collapseAll = useCallback(() => {
+    // Collapse the process wrapper (contains thinking + all tool cards)
+    if (renderRef.current.processEl) {
+      renderRef.current.processEl.open = false;
+      // Update summary to show tool count
+      const meta = renderRef.current.processEl.querySelector(".kfai-process-meta");
+      const count = renderRef.current.toolCount;
+      if (meta) {
+        meta.textContent = count > 0 ? `${count} tool call${count > 1 ? "s" : ""}` : "thinking";
+      }
+    }
+    // Also collapse individual tool cards inside (in case user re-expands the
+    // process wrapper — individual tools should still be collapsed by default)
     if (renderRef.current.thinkingEl) {
       renderRef.current.thinkingEl.open = false;
     }
@@ -221,14 +241,15 @@ export default function Page() {
         setStatusText("agent · iter " + evt.iter);
         break;
       case "thinking": {
-        const cur = ensureMsg();
-        if (!renderRef.current.thinkingEl) {
+        ensureMsg();
+        // Append thinking block INSIDE the process wrapper
+        if (!renderRef.current.thinkingEl && renderRef.current.processBody) {
           const el = document.createElement("details");
           el.className = "kfai-thinking";
-          el.open = false; // collapsed by default — expand only if user clicks
+          el.open = false;
           el.innerHTML =
             '<summary><span class="kfai-think-label">thinking</span><span class="kfai-think-meta">stream</span></summary><div class="kfai-think-body"></div>';
-          cur.appendChild(el);
+          renderRef.current.processBody.appendChild(el);
           renderRef.current.thinkingEl = el;
           renderRef.current.thinkingBody = el.querySelector(".kfai-think-body");
         }
@@ -238,25 +259,30 @@ export default function Page() {
         break;
       }
       case "tool_call": {
-        const cur = ensureMsg();
-        renderToolCard(cur, evt.id, evt.name, evt.args);
+        ensureMsg();
+        renderRef.current.toolCount++;
+        // Tool cards go INSIDE the process wrapper
+        if (renderRef.current.processBody) {
+          renderToolCard(renderRef.current.processBody, evt.id, evt.name, evt.args);
+        }
         break;
       }
       case "tool_result":
         updateToolCard(evt.id, evt.result, evt.status);
         break;
       case "plan": {
-        const cur = ensureMsg();
-        renderPlanCard(cur, evt.goal, evt.steps);
+        ensureMsg();
+        if (renderRef.current.processBody) renderPlanCard(renderRef.current.processBody, evt.goal, evt.steps);
         break;
       }
       case "reflect": {
-        const cur = ensureMsg();
-        renderReflectCard(cur, evt.progress, evt.assessment, evt.next);
+        ensureMsg();
+        if (renderRef.current.processBody) renderReflectCard(renderRef.current.processBody, evt.progress, evt.assessment, evt.next);
         break;
       }
       case "task_complete": {
         const cur = ensureMsg();
+        // Task complete badge stays OUTSIDE the process wrapper (it's the final status)
         renderCompleteCard(cur, evt.summary, evt.confidence);
         break;
       }
@@ -278,9 +304,6 @@ export default function Page() {
         if (renderRef.current.textEl) {
           renderRef.current.textEl.innerHTML = renderMd(renderRef.current.textRaw);
         }
-        // Auto-collapse all tool cards + thinking block once the answer
-        // is final — keeps the UI clean. User can re-expand any card to
-        // inspect what tool was called and what it returned.
         collapseAll();
         onFinal(renderRef.current.textRaw);
         break;
@@ -292,7 +315,6 @@ export default function Page() {
         break;
       case "end":
         if (renderRef.current.textRaw) onFinal(renderRef.current.textRaw);
-        // Final safety net: collapse anything still open.
         collapseAll();
         break;
     }
@@ -361,7 +383,7 @@ export default function Page() {
     const newHistory = [...history, { role: "user" as const, content: text }];
     setHistory(newHistory);
 
-    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [] };
+    renderRef.current = { curMsg: null, processEl: null, processBody: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [], toolCount: 0 };
     abortRef.current = new AbortController();
 
     try {
@@ -402,7 +424,7 @@ export default function Page() {
     if (streaming) abortRef.current?.abort();
     if (threadRef.current) threadRef.current.innerHTML = "";
     setHistory([]);
-    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [] };
+    renderRef.current = { curMsg: null, processEl: null, processBody: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [], toolCount: 0 };
   }, [streaming]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────────
