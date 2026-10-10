@@ -512,6 +512,414 @@ export const TOOLS: ToolDef[] = [
       },
     },
   },
+  // ── MCP tools yang belum di-integrate ──
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_render_prompt',
+      description: 'Fill {{variables}} in a saved prompt template and return the rendered text. Use after krouter_list_prompts to find available templates.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Template id from krouter_list_prompts.' },
+          vars: { type: 'object', description: 'Values for {{placeholders}}.', additionalProperties: { type: 'string' } },
+        },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_refresh_proxies',
+      description: 'Run the proxy pool refresh pipeline: scrape public proxies, health-check them, remove dead ones. May take a few seconds. No arguments.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'krouter_chat',
+      description: 'Send one chat completion through the krouter gateway to any enabled model. Proxy fallback and retries apply automatically. Use this for sub-queries when you need a second opinion from a different model.',
+      parameters: {
+        type: 'object',
+        properties: {
+          model: { type: 'string', description: 'Model id, e.g. "opencode/big-pickle".' },
+          message: { type: 'string', description: 'Single user message.' },
+          maxTokens: { type: 'number', description: 'Completion budget. Default 256.' },
+        },
+        required: ['model'],
+      },
+    },
+  },
+  // ── String / text utilities ──
+  {
+    type: 'function',
+    function: {
+      name: 'regex_test',
+      description: 'Test a regular expression against a string. Returns match status, matched groups, and match count.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'The regex pattern (without delimiters).' },
+          text: { type: 'string', description: 'The text to test.' },
+          flags: { type: 'string', description: 'Regex flags: g, i, m, s, u. Default "".' },
+        },
+        required: ['pattern', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'slugify',
+      description: 'Convert text to URL-safe slug. Lowercase, hyphenated, no special chars.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Text to slugify.' } },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'string_reverse',
+      description: 'Reverse a string.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Text to reverse.' } },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'case_convert',
+      description: 'Convert text case: camelCase, snake_case, kebab-case, UPPER_SNAKE, Title Case, lower, UPPER.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to convert.' },
+          to: { type: 'string', description: 'Target: camel, snake, kebab, upper_snake, title, lower, upper.' },
+        },
+        required: ['text', 'to'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sort_lines',
+      description: 'Sort lines of text. Options: asc, desc, natural, length, unique.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Multi-line text to sort.' },
+          mode: { type: 'string', description: '"asc", "desc", "natural", "length", or "unique" (default asc).' },
+        },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'dedupe_lines',
+      description: 'Remove duplicate lines from text. Returns unique lines + count removed.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Multi-line text.' } },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'char_frequency',
+      description: 'Count frequency of each character in text. Returns sorted list.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Text to analyze.' } },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'text_diff',
+      description: 'Compare two texts line by line. Returns added/removed/unchanged lines.',
+      parameters: {
+        type: 'object',
+        properties: {
+          a: { type: 'string', description: 'Original text.' },
+          b: { type: 'string', description: 'Modified text.' },
+        },
+        required: ['a', 'b'],
+      },
+    },
+  },
+  // ── Data format conversions ──
+  {
+    type: 'function',
+    function: {
+      name: 'json_to_csv',
+      description: 'Convert a JSON array of objects to CSV format.',
+      parameters: {
+        type: 'object',
+        properties: { json: { type: 'string', description: 'JSON array string.' } },
+        required: ['json'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'csv_to_json',
+      description: 'Convert CSV text to JSON array of objects (first row = headers).',
+      parameters: {
+        type: 'object',
+        properties: { csv: { type: 'string', description: 'CSV text.' } },
+        required: ['csv'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'markdown_to_html',
+      description: 'Convert Markdown text to HTML. Supports headings, bold, italic, links, lists, code blocks.',
+      parameters: {
+        type: 'object',
+        properties: { markdown: { type: 'string', description: 'Markdown source.' } },
+        required: ['markdown'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'html_to_text',
+      description: 'Strip HTML tags and convert to plain text. Preserves line breaks.',
+      parameters: {
+        type: 'object',
+        properties: { html: { type: 'string', description: 'HTML source.' } },
+        required: ['html'],
+      },
+    },
+  },
+  // ── Generators ──
+  {
+    type: 'function',
+    function: {
+      name: 'password_generate',
+      description: 'Generate a random password. Customizable length, character sets.',
+      parameters: {
+        type: 'object',
+        properties: {
+          length: { type: 'number', description: 'Password length (default 16, max 128).' },
+          uppercase: { type: 'boolean', description: 'Include uppercase letters (default true).' },
+          lowercase: { type: 'boolean', description: 'Include lowercase letters (default true).' },
+          numbers: { type: 'boolean', description: 'Include digits (default true).' },
+          symbols: { type: 'boolean', description: 'Include symbols (default true).' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'lorem_ipsum',
+      description: 'Generate Lorem Ipsum placeholder text. Returns paragraphs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          count: { type: 'number', description: 'Number of paragraphs (default 2, max 20).' },
+          words_per_paragraph: { type: 'number', description: 'Words per paragraph (default 50).' },
+        },
+      },
+    },
+  },
+  // ── Encoders / decoders ──
+  {
+    type: 'function',
+    function: {
+      name: 'url_encode',
+      description: 'URL-encode (percent-encode) a string.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to encode.' },
+          action: { type: 'string', description: '"encode" or "decode".' },
+        },
+        required: ['text', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'html_entities',
+      description: 'Encode or decode HTML entities (&amp; &lt; etc).',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to process.' },
+          action: { type: 'string', description: '"encode" or "decode".' },
+        },
+        required: ['text', 'action'],
+      },
+    },
+  },
+  // ── Number / unit tools ──
+  {
+    type: 'function',
+    function: {
+      name: 'number_format',
+      description: 'Format a number with thousands separator and decimal places.',
+      parameters: {
+        type: 'object',
+        properties: {
+          number: { type: 'number', description: 'The number to format.' },
+          decimals: { type: 'number', description: 'Decimal places (default 2).' },
+          thousands_sep: { type: 'string', description: 'Thousands separator (default ",").' },
+          decimal_sep: { type: 'string', description: 'Decimal separator (default ".").' },
+        },
+        required: ['number'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'unit_convert',
+      description: 'Convert between units: length (m/km/mi/ft/in), weight (kg/g/lb/oz), temperature (C/F/K), time (s/min/h/day).',
+      parameters: {
+        type: 'object',
+        properties: {
+          value: { type: 'number', description: 'Value to convert.' },
+          from: { type: 'string', description: 'Source unit (e.g. "km", "lb", "C").' },
+          to: { type: 'string', description: 'Target unit (e.g. "mi", "kg", "F").' },
+        },
+        required: ['value', 'from', 'to'],
+      },
+    },
+  },
+  // ── Fun / niche ──
+  {
+    type: 'function',
+    function: {
+      name: 'morse_code',
+      description: 'Encode text to Morse code or decode Morse code to text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text or Morse (use . and - separated by spaces).' },
+          action: { type: 'string', description: '"encode" or "decode".' },
+        },
+        required: ['text', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'nato_phonetic',
+      description: 'Convert text to NATO phonetic alphabet (Alpha Bravo Charlie...) or decode back.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to convert.' },
+          action: { type: 'string', description: '"encode" or "decode".' },
+        },
+        required: ['text', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'roman_numerals',
+      description: 'Convert Arabic number to Roman numerals or vice versa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          value: { type: 'string', description: 'Number (e.g. "2024") or Roman numeral (e.g. "MMXXIV").' },
+          action: { type: 'string', description: '"to_roman" (arabic→roman) or "to_arabic" (roman→arabic).' },
+        },
+        required: ['value', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'qr_code',
+      description: 'Generate a QR code as an SVG string for any text/URL.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Content to encode.' },
+          size: { type: 'number', description: 'Module size in pixels (default 200).' },
+        },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'url_parse',
+      description: 'Parse a URL into components: protocol, host, path, query params, fragment.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'The URL to parse.' } },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mime_type',
+      description: 'Get MIME type for a file extension, or find extensions for a MIME type.',
+      parameters: {
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: 'File extension (e.g. ".json") or MIME type (e.g. "application/json").' },
+          action: { type: 'string', description: '"to_mime" (ext→mime) or "to_ext" (mime→ext).' },
+        },
+        required: ['input', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cron_validate',
+      description: 'Validate a cron expression and explain its schedule in human-readable form.',
+      parameters: {
+        type: 'object',
+        properties: { expression: { type: 'string', description: 'Cron expression (5 fields: min hour day month weekday).' } },
+        required: ['expression'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'text_stats',
+      description: 'Comprehensive text statistics: words, sentences, paragraphs, reading time, avg word length, syllable count.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Text to analyze.' } },
+        required: ['text'],
+      },
+    },
+  },
 ];
 
 // ── krouter streaming call ─────────────────────────────────────────────────────

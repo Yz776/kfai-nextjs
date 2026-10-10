@@ -44,10 +44,52 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'krouter_list_providers': return await toolMcp('krouter_list_providers', {});
       case 'krouter_list_virtual_keys': return await toolMcp('krouter_list_virtual_keys', {});
       case 'krouter_list_prompts': return await toolMcp('krouter_list_prompts', {});
+      case 'krouter_render_prompt': return await toolMcp('krouter_render_prompt', { id: String(args.id ?? ''), ...(args.vars ? { vars: args.vars as Record<string, string> } : {}) });
+      case 'krouter_refresh_proxies': return await toolMcp('krouter_refresh_proxies', {});
+      case 'krouter_chat': return await toolMcp('krouter_chat', {
+        model: String(args.model ?? 'opencode/big-pickle'),
+        ...(args.message ? { message: String(args.message) } : {}),
+        ...(args.messages ? { messages: args.messages } : {}),
+        ...(args.maxTokens !== undefined ? { maxTokens: Number(args.maxTokens) } : {}),
+      });
       // ── Reasoning tools (no side effects, just structured output) ──
       case 'plan':          return toolPlan(String(args.goal ?? ''), Array.isArray(args.steps) ? args.steps as string[] : []);
       case 'reflect':      return toolReflect(String(args.progress ?? ''), String(args.assessment ?? ''), String(args.next ?? ''));
       case 'task_complete': return toolComplete(String(args.summary ?? ''), String(args.confidence ?? 'medium'));
+      // ── String / text utilities ──
+      case 'regex_test':      return toolRegexTest(String(args.pattern ?? ''), String(args.text ?? ''), String(args.flags ?? ''));
+      case 'slugify':         return toolSlugify(String(args.text ?? ''));
+      case 'string_reverse':  return toolStringReverse(String(args.text ?? ''));
+      case 'case_convert':    return toolCaseConvert(String(args.text ?? ''), String(args.to ?? 'lower'));
+      case 'sort_lines':      return toolSortLines(String(args.text ?? ''), String(args.mode ?? 'asc'));
+      case 'dedupe_lines':    return toolDedupeLines(String(args.text ?? ''));
+      case 'char_frequency':  return toolCharFrequency(String(args.text ?? ''));
+      case 'text_diff':       return toolTextDiff(String(args.a ?? ''), String(args.b ?? ''));
+      // ── Data format conversions ──
+      case 'json_to_csv':      return toolJsonToCsv(String(args.json ?? ''));
+      case 'csv_to_json':      return toolCsvToJson(String(args.csv ?? ''));
+      case 'markdown_to_html': return toolMarkdownToHtml(String(args.markdown ?? ''));
+      case 'html_to_text':    return toolHtmlToText(String(args.html ?? ''));
+      // ── Generators ──
+      case 'password_generate': return toolPasswordGenerate(
+        Number(args.length ?? 16), args.uppercase !== false, args.lowercase !== false, args.numbers !== false, args.symbols !== false
+      );
+      case 'lorem_ipsum':     return toolLoremIpsum(Number(args.count ?? 2), Number(args.words_per_paragraph ?? 50));
+      // ── Encoders / decoders ──
+      case 'url_encode':      return toolUrlEncode(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'html_entities':   return toolHtmlEntities(String(args.text ?? ''), String(args.action ?? 'encode'));
+      // ── Number / unit tools ──
+      case 'number_format':   return toolNumberFormat(Number(args.number ?? 0), Number(args.decimals ?? 2), String(args.thousands_sep ?? ','), String(args.decimal_sep ?? '.'));
+      case 'unit_convert':    return toolUnitConvert(Number(args.value ?? 0), String(args.from ?? ''), String(args.to ?? ''));
+      // ── Fun / niche ──
+      case 'morse_code':      return toolMorseCode(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'nato_phonetic':   return toolNatoPhonetic(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'roman_numerals':  return toolRomanNumerals(String(args.value ?? ''), String(args.action ?? 'to_roman'));
+      case 'qr_code':         return toolQrCode(String(args.text ?? ''), Number(args.size ?? 200));
+      case 'url_parse':       return toolUrlParse(String(args.url ?? ''));
+      case 'mime_type':       return toolMimeType(String(args.input ?? ''), String(args.action ?? 'to_mime'));
+      case 'cron_validate':   return toolCronValidate(String(args.expression ?? ''));
+      case 'text_stats':      return toolTextStats(String(args.text ?? ''));
       default: {
         // Built-in model tools that don't exist in our environment — give a helpful
         // redirect message so the model knows which KFAI tool to use instead.
@@ -841,6 +883,538 @@ async function toolMcpFetch(url: string): Promise<ToolResult> {
     proxy: payload.proxy,
     warning: payload.warning,
     content: cleanText,
+  };
+}
+
+// ── String / text utilities ────────────────────────────────────────────────────
+function toolRegexTest(pattern: string, text: string, flags: string): ToolResult {
+  if (!pattern) return { status: 'error', error: 'Empty pattern' };
+  try {
+    const re = new RegExp(pattern, flags);
+    const matches: string[] = [];
+    let m: RegExpExecArray | null;
+    if (flags.includes('g')) {
+      while ((m = re.exec(text)) !== null && matches.length < 100) matches.push(m[0]);
+    } else {
+      m = re.exec(text);
+      if (m) matches.push(m[0]);
+    }
+    return {
+      status: 'done',
+      matched: matches.length > 0,
+      match_count: matches.length,
+      matches: matches.slice(0, 20),
+      groups: m?.slice(1) || [],
+    };
+  } catch (e: any) {
+    return { status: 'error', error: 'Invalid regex: ' + (e?.message || String(e)) };
+  }
+}
+
+function toolSlugify(text: string): ToolResult {
+  const slug = text.toLowerCase().trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return { status: 'done', original: text, slug };
+}
+
+function toolStringReverse(text: string): ToolResult {
+  return { status: 'done', reversed: text.split('').reverse().join('') };
+}
+
+function toolCaseConvert(text: string, to: string): ToolResult {
+  let result = text;
+  switch (to) {
+    case 'camel': {
+      result = text.toLowerCase()
+        .replace(/[^a-z0-9]+(.)/g, (_, c) => c.toUpperCase())
+        .replace(/[^a-zA-Z0-9]/g, '');
+      break;
+    }
+    case 'snake':
+      result = text.trim().replace(/[\s\-]+/g, '_').replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+      break;
+    case 'kebab':
+      result = text.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+      break;
+    case 'upper_snake':
+      result = text.trim().replace(/[\s\-]+/g, '_').replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+      break;
+    case 'title':
+      result = text.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+      break;
+    case 'lower':
+      result = text.toLowerCase();
+      break;
+    case 'upper':
+      result = text.toUpperCase();
+      break;
+    default:
+      return { status: 'error', error: `Unknown case: ${to}. Use camel, snake, kebab, upper_snake, title, lower, upper.` };
+  }
+  return { status: 'done', target: to, result };
+}
+
+function toolSortLines(text: string, mode: string): ToolResult {
+  let lines = text.split('\n');
+  switch (mode) {
+    case 'asc': lines.sort(); break;
+    case 'desc': lines.sort().reverse(); break;
+    case 'natural':
+      lines.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+      break;
+    case 'length': lines.sort((a, b) => a.length - b.length); break;
+    case 'unique':
+      lines.sort();
+      lines = [...new Set(lines)];
+      break;
+    default:
+      return { status: 'error', error: `Unknown mode: ${mode}. Use asc, desc, natural, length, unique.` };
+  }
+  return { status: 'done', mode, line_count: lines.length, result: lines.join('\n') };
+}
+
+function toolDedupeLines(text: string): ToolResult {
+  const lines = text.split('\n');
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  let removed = 0;
+  for (const l of lines) {
+    if (seen.has(l)) { removed++; continue; }
+    seen.add(l);
+    unique.push(l);
+  }
+  return { status: 'done', original_count: lines.length, unique_count: unique.length, removed, result: unique.join('\n') };
+}
+
+function toolCharFrequency(text: string): ToolResult {
+  const freq: Record<string, number> = {};
+  for (const ch of text) freq[ch] = (freq[ch] || 0) + 1;
+  const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 30);
+  return {
+    status: 'done',
+    unique_chars: Object.keys(freq).length,
+    total_chars: text.length,
+    top: sorted.map(([c, n]) => ({ char: c, count: n })),
+  };
+}
+
+function toolTextDiff(a: string, b: string): ToolResult {
+  const aLines = a.split('\n');
+  const bLines = b.split('\n');
+  const added: string[] = [];
+  const removed: string[] = [];
+  const aSet = new Set(aLines);
+  const bSet = new Set(bLines);
+  for (const l of bLines) if (!aSet.has(l)) added.push(l);
+  for (const l of aLines) if (!bSet.has(l)) removed.push(l);
+  return {
+    status: 'done',
+    added_count: added.length,
+    removed_count: removed.length,
+    added: added.slice(0, 50),
+    removed: removed.slice(0, 50),
+  };
+}
+
+// ── Data format conversions ────────────────────────────────────────────────────
+function toolJsonToCsv(json: string): ToolResult {
+  let arr: any[];
+  try { arr = JSON.parse(json); } catch (e: any) {
+    return { status: 'error', error: 'Invalid JSON: ' + (e?.message || String(e)) };
+  }
+  if (!Array.isArray(arr)) return { status: 'error', error: 'JSON must be an array' };
+  if (arr.length === 0) return { status: 'done', csv: '' };
+  const headers = Object.keys(arr[0]);
+  const escape = (v: any) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = arr.map((obj) => headers.map((h) => escape(obj[h])).join(','));
+  return { status: 'done', csv: [headers.join(','), ...rows].join('\n') };
+}
+
+function toolCsvToJson(csv: string): ToolResult {
+  const lines = csv.trim().split('\n');
+  if (lines.length < 2) return { status: 'error', error: 'CSV needs at least 2 rows (header + data)' };
+  const parseLine = (line: string): string[] => {
+    const out: string[] = [];
+    let cur = '';
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"' && inQ && line[i + 1] === '"') { cur += '"'; i++; continue; }
+      if (c === '"') { inQ = !inQ; continue; }
+      if (c === ',' && !inQ) { out.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    out.push(cur);
+    return out;
+  };
+  const headers = parseLine(lines[0]);
+  const rows = lines.slice(1).map((l) => {
+    const vals = parseLine(l);
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => { obj[h] = vals[i] ?? ''; });
+    return obj;
+  });
+  return { status: 'done', count: rows.length, json: JSON.stringify(rows, null, 2) };
+}
+
+function toolMarkdownToHtml(markdown: string): ToolResult {
+  let html = markdown;
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+  html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/\n\n/g, '</p><p>');
+  return { status: 'done', html: '<p>' + html + '</p>' };
+}
+
+function toolHtmlToText(html: string): ToolResult {
+  let text = html.replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>/gi, '\n\n');
+  text = text.replace(/<[^>]+>/g, '');
+  text = text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  text = text.replace(/\n{3,}/g, '\n\n').trim();
+  return { status: 'done', text };
+}
+
+// ── Generators ──────────────────────────────────────────────────────────────────
+function toolPasswordGenerate(length: number, upper: boolean, lower: boolean, nums: boolean, syms: boolean): ToolResult {
+  const len = Math.max(4, Math.min(128, Math.floor(Number(length) || 16)));
+  let chars = '';
+  if (upper) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  if (lower) chars += 'abcdefghijklmnopqrstuvwxyz';
+  if (nums) chars += '0123456789';
+  if (syms) chars += '!@#$%^&*()_+-=[]{}|;:,.<>?';
+  if (!chars) return { status: 'error', error: 'At least one character set must be enabled' };
+  let pw = '';
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  for (let i = 0; i < len; i++) pw += chars[bytes[i] % chars.length];
+  return { status: 'done', length: len, password: pw, strength: len >= 12 ? 'strong' : len >= 8 ? 'medium' : 'weak' };
+}
+
+function toolLoremIpsum(count: number, wordsPer: number): ToolResult {
+  const n = Math.max(1, Math.min(20, Math.floor(Number(count) || 2)));
+  const wp = Math.max(5, Math.min(200, Math.floor(Number(wordsPer) || 50)));
+  const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure in reprehenderit voluptate velit esse cillum eu fugiat nulla pariatur excepteur sint occaecat cupidatat non proident sunt culpa qui officia deserunt mollit anim id est laborum'.split(' ');
+  const paragraphs: string[] = [];
+  for (let p = 0; p < n; p++) {
+    const w: string[] = [];
+    for (let i = 0; i < wp; i++) w.push(words[Math.floor(Math.random() * words.length)]);
+    let s = w.join(' ');
+    s = s.charAt(0).toUpperCase() + s.slice(1) + '.';
+    paragraphs.push(s);
+  }
+  return { status: 'done', paragraphs: n, text: paragraphs.join('\n\n') };
+}
+
+// ── Encoders / decoders ──────────────────────────────────────────────────────────
+function toolUrlEncode(text: string, action: string): ToolResult {
+  try {
+    if (action === 'encode') return { status: 'done', result: encodeURIComponent(text) };
+    if (action === 'decode') return { status: 'done', result: decodeURIComponent(text) };
+    return { status: 'error', error: 'Action must be "encode" or "decode"' };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'URL encode/decode failed' };
+  }
+}
+
+function toolHtmlEntities(text: string, action: string): ToolResult {
+  if (action === 'encode') {
+    return { status: 'done', result: text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string)) };
+  }
+  if (action === 'decode') {
+    return { status: 'done', result: text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))) };
+  }
+  return { status: 'error', error: 'Action must be "encode" or "decode"' };
+}
+
+// ── Number / unit tools ──────────────────────────────────────────────────────────
+function toolNumberFormat(num: number, decimals: number, tSep: string, dSep: string): ToolResult {
+  const d = Math.max(0, Math.min(10, Math.floor(Number(decimals) || 0)));
+  const parts = num.toFixed(d).split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, tSep);
+  return { status: 'done', result: parts.join(dSep) };
+}
+
+function toolUnitConvert(value: number, from: string, to: string): ToolResult {
+  const f = from.toLowerCase().trim();
+  const t = to.toLowerCase().trim();
+
+  // Length (base: meters)
+  const lengthUnits: Record<string, number> = {
+    m: 1, km: 1000, cm: 0.01, mm: 0.001,
+    mi: 1609.344, ft: 0.3048, in: 0.0254, yd: 0.9144,
+  };
+  if (f in lengthUnits && t in lengthUnits) {
+    return { status: 'done', value, from: f, to: t, result: (value * lengthUnits[f]) / lengthUnits[t] };
+  }
+
+  // Weight (base: grams)
+  const weightUnits: Record<string, number> = {
+    g: 1, kg: 1000, mg: 0.001,
+    lb: 453.592, oz: 28.3495,
+  };
+  if (f in weightUnits && t in weightUnits) {
+    return { status: 'done', value, from: f, to: t, result: (value * weightUnits[f]) / weightUnits[t] };
+  }
+
+  // Time (base: seconds)
+  const timeUnits: Record<string, number> = {
+    s: 1, min: 60, h: 3600, day: 86400, week: 604800,
+  };
+  if (f in timeUnits && t in timeUnits) {
+    return { status: 'done', value, from: f, to: t, result: (value * timeUnits[f]) / timeUnits[t] };
+  }
+
+  // Temperature (C, F, K)
+  if (['c', 'f', 'k'].includes(f) && ['c', 'f', 'k'].includes(t)) {
+    let c: number;
+    if (f === 'c') c = value;
+    else if (f === 'f') c = (value - 32) * 5 / 9;
+    else c = value - 273.15;
+    let result: number;
+    if (t === 'c') result = c;
+    else if (t === 'f') result = c * 9 / 5 + 32;
+    else result = c + 273.15;
+    return { status: 'done', value, from: f, to: t, result };
+  }
+
+  return { status: 'error', error: `Unknown unit pair: ${from} → ${to}. Supported: length (m/km/cm/mm/mi/ft/in/yd), weight (g/kg/mg/lb/oz), time (s/min/h/day/week), temp (C/F/K).` };
+}
+
+// ── Fun / niche ──────────────────────────────────────────────────────────────────
+function toolMorseCode(text: string, action: string): ToolResult {
+  const map: Record<string, string> = {
+    a: '.-', b: '-...', c: '-.-.', d: '-..', e: '.', f: '..-.', g: '--.', h: '....',
+    i: '..', j: '.---', k: '-.-', l: '.-..', m: '--', n: '-.', o: '---', p: '.--.',
+    q: '--.-', r: '.-.', s: '...', t: '-', u: '..-', v: '...-', w: '.--', x: '-..-',
+    y: '-.--', z: '--..', '0': '-----', '1': '.----', '2': '..---', '3': '...--',
+    '4': '....-', '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+    '.': '.-.-.-', ',': '--..--', '?': '..--..', '!': '-.-.--', ' ': '/',
+  };
+  const reverseMap: Record<string, string> = Object.fromEntries(Object.entries(map).map(([k, v]) => [v, k]));
+  if (action === 'encode') {
+    const result = text.toLowerCase().split('').map((c) => map[c] || '').filter(Boolean).join(' ');
+    return { status: 'done', result };
+  }
+  if (action === 'decode') {
+    const result = text.split(' ').map((s) => reverseMap[s] || '').join('');
+    return { status: 'done', result };
+  }
+  return { status: 'error', error: 'Action must be "encode" or "decode"' };
+}
+
+function toolNatoPhonetic(text: string, action: string): ToolResult {
+  const map: Record<string, string> = {
+    a: 'Alpha', b: 'Bravo', c: 'Charlie', d: 'Delta', e: 'Echo', f: 'Foxtrot', g: 'Golf',
+    h: 'Hotel', i: 'India', j: 'Juliet', k: 'Kilo', l: 'Lima', m: 'Mike', n: 'November',
+    o: 'Oscar', p: 'Papa', q: 'Quebec', r: 'Romeo', s: 'Sierra', t: 'Tango', u: 'Uniform',
+    v: 'Victor', w: 'Whiskey', x: 'X-ray', y: 'Yankee', z: 'Zulu',
+    '0': 'Zero', '1': 'One', '2': 'Two', '3': 'Three', '4': 'Four', '5': 'Five',
+    '6': 'Six', '7': 'Seven', '8': 'Eight', '9': 'Niner',
+  };
+  const reverseMap: Record<string, string> = Object.fromEntries(Object.entries(map).map(([k, v]) => [v.toLowerCase(), k]));
+  if (action === 'encode') {
+    const result = text.toLowerCase().split('').map((c) => map[c] || c).filter(Boolean).join(' ');
+    return { status: 'done', result };
+  }
+  if (action === 'decode') {
+    const result = text.split(/\s+/).map((w) => reverseMap[w.toLowerCase()] || '').join('');
+    return { status: 'done', result };
+  }
+  return { status: 'error', error: 'Action must be "encode" or "decode"' };
+}
+
+function toolRomanNumerals(value: string, action: string): ToolResult {
+  if (action === 'to_roman') {
+    const num = parseInt(value, 10);
+    if (isNaN(num) || num < 1 || num > 3999) {
+      return { status: 'error', error: 'Number must be 1-3999 for Roman conversion' };
+    }
+    const lookup: [number, string][] = [
+      [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'],
+      [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'],
+      [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I'],
+    ];
+    let n = num;
+    let roman = '';
+    for (const [v, sym] of lookup) {
+      while (n >= v) { roman += sym; n -= v; }
+    }
+    return { status: 'done', arabic: num, roman };
+  }
+  if (action === 'to_arabic') {
+    const roman = value.toUpperCase().trim();
+    if (!/^[MDCLXVI]+$/.test(roman)) {
+      return { status: 'error', error: 'Invalid Roman numeral (only MDCLXVI allowed)' };
+    }
+    const vals: Record<string, number> = { M: 1000, D: 500, C: 100, L: 50, X: 10, V: 5, I: 1 };
+    let result = 0;
+    for (let i = 0; i < roman.length; i++) {
+      const cur = vals[roman[i]];
+      const next = vals[roman[i + 1]] || 0;
+      result += cur < next ? -cur : cur;
+    }
+    return { status: 'done', roman, arabic: result };
+  }
+  return { status: 'error', error: 'Action must be "to_roman" or "to_arabic"' };
+}
+
+function toolQrCode(text: string, size: number): ToolResult {
+  // Minimal QR code generator — returns a placeholder SVG with the text.
+  // For a real QR code, a library like 'qrcode' would be needed; here we
+  // produce a simple SVG box so the tool works without extra deps.
+  const sz = Math.max(50, Math.min(1000, Math.floor(Number(size) || 200)));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}">
+  <rect width="${sz}" height="${sz}" fill="#ffffff"/>
+  <rect x="${sz * 0.1}" y="${sz * 0.1}" width="${sz * 0.8}" height="${sz * 0.8}" fill="none" stroke="#000000" stroke-width="2"/>
+  <text x="${sz / 2}" y="${sz / 2}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="${Math.floor(sz / 20)}" fill="#000000">${escapeXml(text.slice(0, 50))}</text>
+  <text x="${sz / 2}" y="${sz * 0.9}" text-anchor="middle" font-family="monospace" font-size="${Math.floor(sz / 25)}" fill="#666666">QR placeholder — use a QR library for real encoding</text>
+</svg>`;
+  return { status: 'done', text, size: sz, svg };
+}
+
+function escapeXml(s: string): string {
+  return s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c] as string));
+}
+
+function toolUrlParse(url: string): ToolResult {
+  try {
+    const u = new URL(url);
+    const params: Record<string, string> = {};
+    u.searchParams.forEach((v, k) => { params[k] = v; });
+    return {
+      status: 'done',
+      protocol: u.protocol,
+      host: u.host,
+      hostname: u.hostname,
+      port: u.port,
+      path: u.pathname,
+      query: u.search,
+      params,
+      fragment: u.hash,
+      username: u.username,
+      password: u.password,
+    };
+  } catch (e: any) {
+    return { status: 'error', error: 'Invalid URL: ' + (e?.message || String(e)) };
+  }
+}
+
+function toolMimeType(input: string, action: string): ToolResult {
+  const map: Record<string, string> = {
+    '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+    '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain', '.md': 'text/markdown',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+    '.svg': 'image/svg+xml', '.webp': 'image/webp', '.ico': 'image/x-icon',
+    '.pdf': 'application/pdf', '.zip': 'application/zip', '.gz': 'application/gzip',
+    '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.webm': 'video/webm',
+    '.csv': 'text/csv', '.tsv': 'text/tab-separated-values',
+    '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
+    '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  };
+  const reverseMap: Record<string, string[]> = {};
+  for (const [ext, mime] of Object.entries(map)) {
+    (reverseMap[mime] = reverseMap[mime] || []).push(ext);
+  }
+  if (action === 'to_mime') {
+    let ext = input.toLowerCase().trim();
+    if (!ext.startsWith('.')) ext = '.' + ext;
+    const mime = map[ext];
+    if (!mime) return { status: 'error', error: `Unknown extension: ${ext}` };
+    return { status: 'done', extension: ext, mime_type: mime };
+  }
+  if (action === 'to_ext') {
+    const mime = input.toLowerCase().trim();
+    const exts = reverseMap[mime];
+    if (!exts) return { status: 'error', error: `Unknown MIME type: ${mime}` };
+    return { status: 'done', mime_type: mime, extensions: exts };
+  }
+  return { status: 'error', error: 'Action must be "to_mime" or "to_ext"' };
+}
+
+function toolCronValidate(expression: string): ToolResult {
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return { status: 'error', error: `Cron expression must have 5 fields (min hour day month weekday). Got ${parts.length}.` };
+  }
+  const [min, hour, dom, mon, dow] = parts;
+  const validateField = (field: string, min: number, max: number, name: string): string | null => {
+    if (field === '*' || field === '?') return null;
+    for (const part of field.split(',')) {
+      // Support: */N, N, N-M, N/M
+      const stepMatch = part.match(/^(\*|\d+(?:-\d+)?)(\/(\d+))?$/);
+      if (!stepMatch) return `Invalid ${name}: ${part}`;
+      const basePart = stepMatch[1];
+      if (basePart === '*') continue;
+      if (basePart.includes('-')) {
+        const [a, b] = basePart.split('-').map((n) => parseInt(n, 10));
+        if (isNaN(a) || isNaN(b) || a < min || a > max || b < min || b > max) {
+          return `${name} range out of bounds (${min}-${max}): ${part}`;
+        }
+      } else {
+        const base = parseInt(basePart, 10);
+        if (isNaN(base) || base < min || base > max) return `${name} value out of range (${min}-${max}): ${part}`;
+      }
+    }
+    return null;
+  };
+  const errors: string[] = [];
+  const e1 = validateField(min, 0, 59, 'minute'); if (e1) errors.push(e1);
+  const e2 = validateField(hour, 0, 23, 'hour'); if (e2) errors.push(e2);
+  const e3 = validateField(dom, 1, 31, 'day-of-month'); if (e3) errors.push(e3);
+  const e4 = validateField(mon, 1, 12, 'month'); if (e4) errors.push(e4);
+  const e5 = validateField(dow, 0, 7, 'weekday'); if (e5) errors.push(e5);
+  if (errors.length > 0) return { status: 'error', error: errors.join('; ') };
+  const describe = (f: string, unit: string): string => {
+    if (f === '*' || f === '?') return `every ${unit}`;
+    if (f.startsWith('*/')) return `every ${f.slice(2)} ${unit}s`;
+    return `at ${unit} ${f}`;
+  };
+  return {
+    status: 'done',
+    valid: true,
+    expression,
+    description: `Runs ${describe(min, 'minute')}, ${describe(hour, 'hour')}, ${describe(dom, 'day')}, ${describe(mon, 'month')}, ${describe(dow, 'weekday')}`,
+  };
+}
+
+function toolTextStats(text: string): ToolResult {
+  const words = text.trim() ? text.trim().split(/\s+/) : [];
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+  const totalLen = words.reduce((a, w) => a + w.length, 0);
+  const avgLen = words.length ? totalLen / words.length : 0;
+  // Rough syllable count
+  const syllables = words.reduce((acc, w) => {
+    const m = w.toLowerCase().match(/[aeiouy]+/g);
+    return acc + (m ? Math.max(1, m.length) : 1);
+  }, 0);
+  const readingTimeMin = Math.ceil(words.length / 200);
+  return {
+    status: 'done',
+    words: words.length,
+    characters: text.length,
+    characters_no_spaces: text.replace(/\s/g, '').length,
+    sentences: sentences.length,
+    paragraphs: paragraphs.length,
+    avg_word_length: Math.round(avgLen * 100) / 100,
+    syllables,
+    reading_time_minutes: readingTimeMin,
   };
 }
 
