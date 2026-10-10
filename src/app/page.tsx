@@ -62,6 +62,9 @@ type RenderState = {
   thinkingBody: HTMLDivElement | null;
   textEl: HTMLDivElement | null;
   textRaw: string;
+  // Track all collapsible tool cards + thinking blocks created in this turn
+  // so we can auto-collapse them when the answer finalizes.
+  toolCards: HTMLDetailsElement[];
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -76,7 +79,7 @@ export default function Page() {
   const threadRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const renderRef = useRef<RenderState>({
-    curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "",
+    curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [],
   });
 
   const scrollToBottom = useCallback(() => {
@@ -123,6 +126,8 @@ export default function Page() {
       </summary>
       <div class="kfai-tool-result"></div>`;
     parent.appendChild(el);
+    // Track this card so we can auto-collapse it after the answer finalizes.
+    renderRef.current.toolCards.push(el);
   }, []);
 
   const updateToolCard = useCallback((id: string, result: unknown, status: string) => {
@@ -186,6 +191,19 @@ export default function Page() {
       </div>
       <div class="kfai-complete-summary">${escapeHtml(summary)}</div>`;
     parent.appendChild(el);
+  }, []);
+
+  // ── Collapse all tool cards + thinking blocks (auto-clean after answer) ──────
+  // Called when the SSE stream ends (done/end/error). All tool cards and
+  // the thinking block are auto-collapsed so the UI shows only the final
+  // answer cleanly. User can click any card to re-expand and inspect.
+  const collapseAll = useCallback(() => {
+    if (renderRef.current.thinkingEl) {
+      renderRef.current.thinkingEl.open = false;
+    }
+    for (const card of renderRef.current.toolCards) {
+      card.open = false;
+    }
   }, []);
 
   // ── SSE handler ──────────────────────────────────────────────────────────────
@@ -260,10 +278,10 @@ export default function Page() {
         if (renderRef.current.textEl) {
           renderRef.current.textEl.innerHTML = renderMd(renderRef.current.textRaw);
         }
-        // Auto-collapse thinking block once the stream is done — keeps the UI clean.
-        if (renderRef.current.thinkingEl) {
-          renderRef.current.thinkingEl.open = false;
-        }
+        // Auto-collapse all tool cards + thinking block once the answer
+        // is final — keeps the UI clean. User can re-expand any card to
+        // inspect what tool was called and what it returned.
+        collapseAll();
         onFinal(renderRef.current.textRaw);
         break;
       case "error":
@@ -274,10 +292,12 @@ export default function Page() {
         break;
       case "end":
         if (renderRef.current.textRaw) onFinal(renderRef.current.textRaw);
+        // Final safety net: collapse anything still open.
+        collapseAll();
         break;
     }
     scrollToBottom();
-  }, [ensureMsg, renderToolCard, updateToolCard, renderPlanCard, renderReflectCard, renderCompleteCard, appendError, scrollToBottom]);
+  }, [ensureMsg, renderToolCard, updateToolCard, renderPlanCard, renderReflectCard, renderCompleteCard, appendError, scrollToBottom, collapseAll]);
 
   // ── SSE reader ────────────────────────────────────────────────────────────────
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>): Promise<string> => {
@@ -322,9 +342,14 @@ export default function Page() {
   }, [handleSSE]);
 
   // ── Send ─────────────────────────────────────────────────────────────────────
+  // sendLockRef prevents overlapping send() calls. If the user clicks send
+  // twice quickly, or clicks an example while a previous send is still
+  // setting up, the second call returns early before starting a new fetch.
+  const sendLockRef = useRef(false);
   const send = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if (!text || streaming) return;
+    if (!text || streaming || sendLockRef.current) return;
+    sendLockRef.current = true;
 
     setInput("");
     setStreaming(true);
@@ -336,7 +361,7 @@ export default function Page() {
     const newHistory = [...history, { role: "user" as const, content: text }];
     setHistory(newHistory);
 
-    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "" };
+    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [] };
     abortRef.current = new AbortController();
 
     try {
@@ -368,6 +393,7 @@ export default function Page() {
       setStatusOnline(true);
       setStatusText("ready");
       abortRef.current = null;
+      sendLockRef.current = false;
     }
   }, [input, streaming, history, appendUser, appendError, readSSE]);
 
@@ -376,7 +402,7 @@ export default function Page() {
     if (streaming) abortRef.current?.abort();
     if (threadRef.current) threadRef.current.innerHTML = "";
     setHistory([]);
-    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "" };
+    renderRef.current = { curMsg: null, thinkingEl: null, thinkingBody: null, textEl: null, textRaw: "", toolCards: [] };
   }, [streaming]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────────
@@ -438,7 +464,7 @@ export default function Page() {
             <h1>
               KFAI <span className="kfai-accent">›_</span>
             </h1>
-            <div className="kfai-sub">{"// agentic assistant — server-side krouter loop"}</div>
+            <div className="kfai-sub">{"// agentic AI assistant"}</div>
             <div className="kfai-examples">
               {EXAMPLES.map((q) => (
                 <button
