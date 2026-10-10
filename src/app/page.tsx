@@ -285,10 +285,22 @@ export default function Page() {
     const decoder = new TextDecoder();
     let buf = "";
     let finalText = "";
+    // Safety timeout: if no data arrives for 90 seconds, abort the read
+    // (krouter SSE responses are bounded; 90s is generous but prevents
+    // infinite hang if the connection stalls).
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        try { reader.cancel("idle timeout"); } catch {}
+      }, 90000);
+    };
+    resetIdle();
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      resetIdle();
       buf += decoder.decode(value, { stream: true });
       let idx: number;
       while ((idx = buf.indexOf("\n\n")) !== -1) {
@@ -305,6 +317,7 @@ export default function Page() {
         handleSSE(evt, (t) => { finalText = t; });
       }
     }
+    if (idleTimer) clearTimeout(idleTimer);
     return finalText;
   }, [handleSSE]);
 
@@ -346,13 +359,16 @@ export default function Page() {
       }
     } catch (e: any) {
       if (e?.name !== "AbortError") appendError(e?.message || "Network error");
+    } finally {
+      // Always reset streaming state, even on error/abort. Without this,
+      // any uncaught exception or hung fetch leaves streaming=true forever
+      // and the UI becomes unresponsive (send button does nothing).
+      setStreaming(false);
+      setStatusBusy(false);
+      setStatusOnline(true);
+      setStatusText("ready");
+      abortRef.current = null;
     }
-
-    setStreaming(false);
-    setStatusBusy(false);
-    setStatusOnline(true);
-    setStatusText("ready");
-    abortRef.current = null;
   }, [input, streaming, history, appendUser, appendError, readSSE]);
 
   // ── New chat ──────────────────────────────────────────────────────────────────
