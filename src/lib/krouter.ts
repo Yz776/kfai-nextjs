@@ -978,6 +978,7 @@ export async function callKrouterStream(
   const state: StreamResult = {
     reasoning: '', content: '', tool_calls: [], finish: null, http: 200, error: null,
   };
+  let thinkBuffer: string | null = null; // tracks <think> blocks in content
   const tcAccum: Record<number, { id: string; name: string; args_str: string }> = {};
 
   while (true) {
@@ -1024,8 +1025,59 @@ export async function callKrouterStream(
         onChunk?.({ reasoning: delta.reasoning_content });
       }
       if (delta.content) {
-        state.content += delta.content;
-        onChunk?.({ content: delta.content });
+        // Some models (e.g. big-pickle) wrap reasoning in <think>...</think>
+        // tags inside the content stream instead of using reasoning_content.
+        // Detect these tags and redirect to reasoning so they don't pollute
+        // the final answer shown to the user.
+        let chunk: string = delta.content;
+        if (thinkBuffer !== null) {
+          // We're inside a <think> block — accumulate until </think>
+          const closeTag = '</' + 'think>';
+          const closeIdx = chunk.indexOf(closeTag);
+          if (closeIdx >= 0) {
+            const thinkPart = chunk.slice(0, closeIdx);
+            const rest = chunk.slice(closeIdx + closeTag.length);
+            state.reasoning += thinkPart;
+            onChunk?.({ reasoning: thinkPart });
+            thinkBuffer = null;
+            chunk = rest;
+          } else {
+            state.reasoning += chunk;
+            onChunk?.({ reasoning: chunk });
+            chunk = '';
+          }
+        }
+        if (chunk) {
+          const openTag = '<' + 'think>';
+          const openIdx = chunk.indexOf(openTag);
+          if (openIdx >= 0) {
+            const beforeThink = chunk.slice(0, openIdx);
+            const afterOpen = chunk.slice(openIdx + openTag.length);
+            if (beforeThink) {
+              state.content += beforeThink;
+              onChunk?.({ content: beforeThink });
+            }
+            const closeTag2 = '</' + 'think>';
+            const closeIdx = afterOpen.indexOf(closeTag2);
+            if (closeIdx >= 0) {
+              const thinkPart = afterOpen.slice(0, closeIdx);
+              const rest = afterOpen.slice(closeIdx + closeTag2.length);
+              state.reasoning += thinkPart;
+              onChunk?.({ reasoning: thinkPart });
+              if (rest) {
+                state.content += rest;
+                onChunk?.({ content: rest });
+              }
+            } else {
+              state.reasoning += afterOpen;
+              onChunk?.({ reasoning: afterOpen });
+              thinkBuffer = ''; // mark we're inside <think>
+            }
+          } else {
+            state.content += chunk;
+            onChunk?.({ content: chunk });
+          }
+        }
       }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -1054,6 +1106,17 @@ export async function callKrouterStream(
       };
     })
     .filter((tc) => tc.name);
+
+  // Final cleanup: strip any remaining think tags from content (safety net
+  // in case the streaming parser missed a partial tag boundary).
+  const openTag = '<' + 'think>';
+  const closeTag = '</' + 'think>';
+  if (state.content.includes(openTag)) {
+    state.content = state.content.replace(
+      new RegExp(openTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + closeTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+      ''
+    ).trim();
+  }
 
   return state;
 }

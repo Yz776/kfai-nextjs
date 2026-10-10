@@ -33,9 +33,39 @@ function escapeHtml(s: string): string {
 }
 
 function renderMd(md: string): string {
-  let s = escapeHtml(md);
+  // Strip any remaining think tags first (safety net)
+  const openTag = '<' + 'think>';
+  const closeTag = '</' + 'think>';
+  let cleaned = md;
+  if (cleaned.includes(openTag)) {
+    cleaned = cleaned.replace(
+      new RegExp(openTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + closeTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+      ''
+    ).trim();
+  }
+  // Also strip escaped think tags (&lt;think&gt;...&lt;/think&gt;)
+  cleaned = cleaned.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/g, '').trim();
+
+  let s = escapeHtml(cleaned);
+  // Code blocks first (before other replacements)
   s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => `<pre><code>${code}</code></pre>`);
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Tables: detect | header | header | format and convert to HTML table
+  // A table is: a line with |...|, followed by |---|---|, followed by |...| rows
+  s = s.replace(/^(\|[^\n]+\|)\n(\|[\s\-:|]+\|)\n((?:\|[^\n]+\|\n?)+)/gm, (match, headerRow, _sep, bodyRows) => {
+    const headers = headerRow.split('|').slice(1, -1).map((h: string) => h.trim());
+    let html = '<table><thead><tr>';
+    for (const h of headers) html += `<th>${h}</th>`;
+    html += '</tr></thead><tbody>';
+    for (const row of bodyRows.trim().split('\n')) {
+      const cells = row.split('|').slice(1, -1).map((c: string) => c.trim());
+      html += '<tr>';
+      for (const c of cells) html += `<td>${c}</td>`;
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+  });
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(?<!\w)_([^_]+)_(?!\w)/g, "<em>$1</em>");
   s = s.replace(/^### (.+)$/gm, "<h3>$1</h3>");
@@ -47,7 +77,7 @@ function renderMd(md: string): string {
   s = s
     .split(/\n\n+/)
     .map((para) => {
-      if (/^<(h[1-3]|ul|ol|pre|li)/.test(para.trim())) return para;
+      if (/^<(h[1-3]|ul|ol|pre|li|table|blockquote)/.test(para.trim())) return para;
       if (para.trim() === "") return "";
       return `<p>${para.replace(/\n/g, "<br>")}</p>`;
     })

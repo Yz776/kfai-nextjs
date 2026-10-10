@@ -620,6 +620,52 @@ body {
   color: #ffffff;
 }
 
+/* ── Tables (markdown) — scrollable on mobile, styled clean ─────────────────── */
+.kfai-text table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12.5px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
+.kfai-text th, .kfai-text td {
+  border: 1px solid #1f1f23;
+  padding: 5px 9px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.kfai-text th {
+  background: #16161a;
+  font-weight: 600;
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.kfai-text td {
+  color: #a1a1aa;
+}
+
+.kfai-text tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.kfai-text blockquote {
+  border-left: 2px solid #2a2a30;
+  padding-left: 10px;
+  margin: 8px 0;
+  color: #a1a1aa;
+}
+
+.kfai-text hr {
+  border: none;
+  border-top: 1px solid #1f1f23;
+  margin: 14px 0;
+}
+
 /* ── Streaming caret ─────────────────────────────────────────────────────────── */
 .kfai-caret::after {
   content: "";
