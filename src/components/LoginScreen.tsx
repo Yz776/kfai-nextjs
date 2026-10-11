@@ -13,15 +13,16 @@ export function LoginScreen({ onLoggedIn }: Props) {
   const [error, setError] = useState<string | null>(null);
   const renderTsRef = useRef<number>(0);
   const loginAttemptedRef = useRef(false);
+  const retryCountRef = useRef(0);
   const onLoggedInRef = useRef(onLoggedIn);
   onLoggedInRef.current = onLoggedIn;
 
   // ── Collect fingerprint + auto-login (no button click needed) ───────────────
   const runAutoLogin = useCallback(async () => {
     setError(null);
+    retryCountRef.current++;
 
     // Collect fingerprint in background while showing progress
-    // Start collection immediately (non-blocking)
     setStage("Memindai canvas + GPU");
     setProgress(10);
     const fpPromise = collectDeviceFingerprint();
@@ -35,14 +36,13 @@ export function LoginScreen({ onLoggedIn }: Props) {
       ["Mengukur presisi CPU", 82],
       ["Memverifikasi jaringan + perilaku", 92],
     ];
-    // Animate through stages while waiting for fingerprint
     for (const [label, pct] of stages) {
       setStage(label);
       setProgress(pct);
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Wait for fingerprint to complete (with 10s timeout fallback)
+    // Wait for fingerprint (10s timeout)
     try {
       await Promise.race([
         fpPromise,
@@ -65,10 +65,16 @@ export function LoginScreen({ onLoggedIn }: Props) {
       setToken(r.token);
       onLoggedInRef.current();
     } catch (e: any) {
-      setError(e?.message || "Gagal verifikasi perangkat");
-      setStage("Gagal — mencoba lagi...");
-      loginAttemptedRef.current = false;
-      setTimeout(() => runAutoLogin(), 2000);
+      const msg = e?.message || "Gagal verifikasi perangkat";
+      setError(msg);
+      // Retry up to 3 times, then show manual retry button
+      if (retryCountRef.current < 3) {
+        setStage("Mencoba lagi...");
+        loginAttemptedRef.current = false;
+        setTimeout(() => runAutoLogin(), 2000);
+      } else {
+        setStage("Gagal — klik untuk coba lagi");
+      }
     }
   }, []);
 
@@ -77,6 +83,12 @@ export function LoginScreen({ onLoggedIn }: Props) {
     renderTsRef.current = Date.now();
     runAutoLogin();
   }, [runAutoLogin]);
+
+  const manualRetry = () => {
+    retryCountRef.current = 0;
+    loginAttemptedRef.current = false;
+    runAutoLogin();
+  };
 
   return (
     <div className="kfai-login">
@@ -96,9 +108,9 @@ export function LoginScreen({ onLoggedIn }: Props) {
 
         {/* Stage indicator */}
         <div className="kfai-fp-stage" style={{ justifyContent: "center" }}>
-          {progress < 100 && <span className="kfai-fp-spinner" />}
+          {progress < 100 && !error && <span className="kfai-fp-spinner" />}
           {progress === 100 && !error && <span style={{ color: "#10b981" }}>✓</span>}
-          {error && <span style={{ color: "#f59e0b" }}>↻</span>}
+          {error && retryCountRef.current >= 3 && <span style={{ color: "#f59e0b" }}>⚠</span>}
           <span>{stage}</span>
         </div>
 
@@ -114,7 +126,29 @@ export function LoginScreen({ onLoggedIn }: Props) {
           <span>Behavior</span>
         </div>
 
-        {error && (
+        {/* Manual retry button — appears after 3 failed attempts */}
+        {error && retryCountRef.current >= 3 && (
+          <button
+            onClick={manualRetry}
+            style={{
+              marginTop: 16,
+              background: "#f59e0b",
+              color: "#0a0a0b",
+              border: "none",
+              borderRadius: 6,
+              padding: "10px 24px",
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "monospace",
+              textTransform: "uppercase",
+            }}
+          >
+            Coba Lagi
+          </button>
+        )}
+
+        {error && retryCountRef.current < 3 && (
           <div className="kfai-login-error" style={{ marginTop: 12 }}>
             {error}
           </div>

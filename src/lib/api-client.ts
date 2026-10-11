@@ -770,24 +770,38 @@ export async function login(renderTimestamp: number): Promise<LoginResponse> {
   const { hash, raw } = await collectDeviceFingerprint();
   const behavior = getBehavioralSignature();
   const body: Record<string, unknown> = {
-    _ts: renderTimestamp,    // time-trap: must be 1.5-300s in the past
-    _fp: hash,               // device fingerprint hash (40+ signals)
-    _fs: raw,                // raw signals (server re-hashes for verification)
-    _bh: behavior,           // behavioral signature (mouse moves, key timings)
-    _hp: '',                 // honeypot — bots will fill this
+    _ts: renderTimestamp,
+    _fp: hash,
+    _fs: raw,
+    _bh: behavior,
+    _hp: '',
   };
-  const res = await fetch('/api/auth', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    if (res.status === 429) throw new Error(j.error || 'Terlalu banyak percobaan login. Coba lagi nanti.');
-    if (res.status === 403) throw new Error(j.error || 'Verifikasi perangkat gagal.');
-    throw new Error(j.error || `Login gagal (${res.status})`);
+  // Timeout: 15s — if Cloudflare/network is slow, abort and retry
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 429) throw new Error(j.error || 'Terlalu banyak percobaan login. Coba lagi nanti.');
+      if (res.status === 403) throw new Error(j.error || 'Verifikasi perangkat gagal.');
+      if (res.status === 502) throw new Error('Akses ditolak. Coba refresh halaman.');
+      throw new Error(j.error || `Login gagal (${res.status})`);
+    }
+    return j as LoginResponse;
+  } catch (e: any) {
+    clearTimeout(timeoutId);
+    if (e?.name === 'AbortError') {
+      throw new Error('Login timeout — koneksi lambat. Mencoba lagi...');
+    }
+    throw e;
   }
-  return j as LoginResponse;
 }
 
 export async function fetchMe(): Promise<AuthMe | null> {
