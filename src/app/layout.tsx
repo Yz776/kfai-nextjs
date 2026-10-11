@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -15,7 +15,13 @@ export const metadata: Metadata = {
   title: "KFAI — Agentic Assistant",
   description: "KFAI — agentic AI assistant with captcha-verified login and per-user isolated environments.",
   keywords: ["KFAI", "agentic AI", "krouter", "AI assistant", "tool calling", "captcha auth"],
-  authors: [{ name: "kangwifi" }],
+  authors: [{ name: "Mohammad Ahsan Al Ghoni", url: "https://ahsann.is-a.dev" }],
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0a0a0b",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -23,7 +29,14 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="id" suppressHydrationWarning>
-      <body className={`${inter.variable} ${mono.variable} antialiased`}>
+      {/* suppressHydrationWarning on body: Cloudflare Rocket Loader + Challenge
+          Platform inject <script> nodes into <head> AFTER React hydrates.
+          This causes DOM mismatch and "removeChild" errors. suppressHydrationWarning
+          tells React to ignore those injected nodes. */}
+      <body
+        className={`${inter.variable} ${mono.variable} antialiased`}
+        suppressHydrationWarning
+      >
         {children}
       </body>
     </html>
