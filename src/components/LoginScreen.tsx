@@ -42,9 +42,12 @@ export function LoginScreen({ onLoggedIn }: Props) {
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Wait for fingerprint to complete
+    // Wait for fingerprint to complete (with 10s timeout fallback)
     try {
-      await fpPromise;
+      await Promise.race([
+        fpPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
+      ]);
       setProgress(100);
       setStage("Perangkat terverifikasi");
 

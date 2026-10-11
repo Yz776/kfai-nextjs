@@ -227,8 +227,13 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     }
   } catch { raw.gl2 = 'err'; }
 
-  // ── Layer 2: Audio fingerprint (CPU/soundcard) ──────────────────────────────
-  raw.audio = await getAudioFingerprint();
+  // ── Layer 2: Audio fingerprint (CPU/soundcard) — with 3s timeout ──────────────
+  try {
+    raw.audio = await Promise.race([
+      getAudioFingerprint(),
+      new Promise<string>((resolve) => setTimeout(() => resolve('audio-timeout'), 3000)),
+    ]);
+  } catch { raw.audio = 'audio-err'; }
 
   // ── Layer 3: Font list (installed fonts) ────────────────────────────────────
   raw.fonts = getFontList();
@@ -283,19 +288,25 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     }
   } catch {}
 
-  // ── Layer 10: Battery API (mobile/laptop) ───────────────────────────────────
+  // ── Layer 10: Battery API (mobile/laptop) — with 2s timeout ─────────────────
   try {
-    const battery = await (navigator as any).getBattery?.();
+    const battery = await Promise.race([
+      (navigator as any).getBattery?.(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
     if (battery) {
       raw.batLevel = String(battery.level);
       raw.batCharging = String(battery.charging);
     }
   } catch {}
 
-  // ── Layer 11: Media devices count (camera/mic/speaker count varies per device)
+  // ── Layer 11: Media devices count — with 2s timeout ────────────────────────
   try {
     if (navigator.mediaDevices?.enumerateDevices) {
-      const devices = await navigator.mediaDevices.enumerateDevices();
+      const devices = await Promise.race([
+        navigator.mediaDevices.enumerateDevices(),
+        new Promise<MediaDeviceInfo[]>([] as MediaDeviceInfo[]),
+      ]);
       raw.mediaAudioIn = String(devices.filter(d => d.kind === 'audioinput').length);
       raw.mediaAudioOut = String(devices.filter(d => d.kind === 'audiooutput').length);
       raw.mediaVideoIn = String(devices.filter(d => d.kind === 'videoinput').length);
