@@ -305,7 +305,7 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     if (navigator.mediaDevices?.enumerateDevices) {
       const devices = await Promise.race([
         navigator.mediaDevices.enumerateDevices(),
-        new Promise<MediaDeviceInfo[]>([] as MediaDeviceInfo[]),
+        new Promise<MediaDeviceInfo[]>((resolve) => setTimeout(() => resolve([]), 2000)),
       ]);
       raw.mediaAudioIn = String(devices.filter(d => d.kind === 'audioinput').length);
       raw.mediaAudioOut = String(devices.filter(d => d.kind === 'audiooutput').length);
