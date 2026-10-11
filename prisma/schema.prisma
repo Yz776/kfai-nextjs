@@ -141,3 +141,21 @@ model DeviceFingerprint {
 
   @@index([userId])
 }
+
+// ── Admin audit log ─────────────────────────────────────────────────────────
+// Records every admin action — who, when, what endpoint, what resource.
+// Required for compliance + forensics if admin access is ever misused.
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  action    String   // e.g. 'list_users', 'view_conversations', 'revoke_session'
+  endpoint  String   // e.g. '/api/admin/users'
+  resource  String?  // e.g. userId being viewed
+  ipAddr    String?
+  userAgent String?
+  timestamp DateTime @default(now())
+  status    String   @default("ok") // ok | error | denied
+  error     String?
+
+  @@index([action])
+  @@index([timestamp])
+}
