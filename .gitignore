@@ -52,8 +52,10 @@ dev.log
 # worklog
 worklog.md
 
-# uploaded files (user content)
-upload/
+# uploaded files (user content) — only exclude /public/uploads/ and root-level /uploads/
+# Do NOT exclude src/app/api/upload/ (that's the route handler!)
+/public/uploads/
+/uploads/
 
 # downloaded deliverables
 download/
