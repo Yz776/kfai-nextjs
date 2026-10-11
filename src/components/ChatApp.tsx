@@ -74,7 +74,7 @@ function renderMd(md: string): string {
   s = s.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   s = s.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   s = s.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   s = s.replace(/^[\-\*] (.+)$/gm, "<li>$1</li>");
   s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
   s = s
@@ -85,6 +85,8 @@ function renderMd(md: string): string {
       return `<p>${para.replace(/\n/g, "<br>")}</p>`;
     })
     .join("\n");
+  // Final sanitization — strip any on* attributes that might have slipped through
+  s = s.replace(/\son\w+\s*=\s*"[^"]*"/gi, '').replace(/\son\w+\s*=\s*'[^']*'/gi, '');
   return s;
 }
 
@@ -434,7 +436,7 @@ export function ChatApp({ me, onLogout }: Props) {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         try { reader.cancel("idle timeout"); } catch {}
-      }, 90000);
+      }, 180000);
     };
     resetIdle();
 

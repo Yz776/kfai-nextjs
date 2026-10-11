@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from './db';
-import { extractIp } from './anti-abuse';
+import { extractIp, checkRateLimit } from './anti-abuse';
 
 // Get admin key from env (set in .env on server, never committed to git)
 const ADMIN_KEY = process.env.KF_AI_ADMIN_KEY;
@@ -30,10 +30,20 @@ export type AdminContext = {
 // Verify X-Admin-Key header against env var
 // Returns AdminContext if valid, null if invalid
 // Also handles audit logging (success + denied attempts)
+// Rate limited: 100 admin requests/hour per IP (fail-open)
 export async function verifyAdmin(req: NextRequest): Promise<AdminContext | null> {
   const ip = extractIp(req.headers);
   const ua = req.headers.get('user-agent') || 'unknown';
   const providedKey = req.headers.get('x-admin-key') || req.headers.get('X-Admin-Key');
+
+  // Rate limit admin endpoints (fail-open if DB unavailable)
+  try {
+    const rl = await checkRateLimit(ip, 'admin');
+    if (!rl.ok) {
+      // Rate limited — don't reveal admin exists
+      return null;
+    }
+  } catch { /* fail open */ }
 
   // Audit log helper
   const audit = async (action: string, resource?: string, status: string = 'ok', error?: string) => {

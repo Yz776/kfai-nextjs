@@ -20,6 +20,7 @@ const LIMITS: Record<string, LimitSpec> = {
   login_attempt:  { maxCount: 10, windowMs: 60 * 60 * 1000 },   // 10/hour
   chat:           { maxCount: 60, windowMs: 60 * 60 * 1000 },   // 60/hour
   device_check:   { maxCount: 100, windowMs: 60 * 60 * 1000 },  // 100/hour
+  admin:          { maxCount: 200, windowMs: 60 * 60 * 1000 },  // 200/hour
 };
 
 export type RateLimitResult =

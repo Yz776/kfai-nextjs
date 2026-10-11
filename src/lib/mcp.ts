@@ -8,7 +8,7 @@
 const KROUTER_MCP_URL = process.env.KROUTER_BASE
   ? `${process.env.KROUTER_BASE}/mcp`
   : 'https://router.kangwifi.eu.org/mcp';
-const KROUTER_KEY = process.env.KROUTER_KEY || 'kr-67eac90a7a86c2a83691fada7de741ff8d1f56f5f69fdedf';
+const KROUTER_KEY = process.env.KROUTER_KEY || '';
 
 // MCP session — we reuse a single session id per process.
 let mcpSessionId: string | null = null;

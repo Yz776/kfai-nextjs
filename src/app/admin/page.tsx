@@ -21,16 +21,21 @@ function escapeHtml(s: string): string {
 }
 function renderMd(md: string): string {
   let s = escapeHtml(md);
+  // Code blocks first
   s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _l, code) => `<pre><code>${code}</code></pre>`);
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Links — sanitize href to only allow http/https (block javascript:, data:, etc.)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   s = s.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   s = s.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   s = s.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/^[\-\*] (.+)$/gm, "<li>$1</li>");
   s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+  // Split into paragraphs
   s = s.split(/\n\n+/).map((p) => /^<(h[1-3]|ul|ol|pre|li)/.test(p.trim()) ? p : (p.trim() ? `<p>${p.replace(/\n/g, "<br>")}</p>` : "")).join("\n");
+  // Final sanitization — strip any on* attributes that might have slipped through
+  s = s.replace(/\son\w+\s*=\s*"[^"]*"/gi, '').replace(/\son\w+\s*=\s*'[^']*'/gi, '');
   return s;
 }
 
