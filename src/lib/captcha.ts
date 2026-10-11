@@ -1,13 +1,19 @@
-// KFAI — Captcha generator (math + noise SVG)
+// KFAI — Captcha generator (math + noise SVG) with IN-MEMORY FALLBACK
+//
 // Captcha session = auth id. So the captcha challenge has to be:
 //   - uniquely identifiable (challengeId)
 //   - single-use (consumed after auth)
 //   - time-limited (5 min)
 //   - brute-force resistant (max 5 attempts, hashed answer)
 //
-// The challenge is a small math equation rendered as an SVG with noise lines
-// and random glyph offsets. SVG is chosen over PNG so it stays crisp on any
-// DPI and avoids binary deps.
+// RESILIENCE: All DB operations are wrapped in try/catch. If the DB is
+// unavailable (Prisma client out of sync, table missing, connection error),
+// we fall back to in-memory storage. This means captcha ALWAYS works —
+// even on first deploy before db:push is run.
+//
+// The in-memory store is a simple Map with TTL eviction. It's per-process,
+// so if you scale horizontally you'd want to use Redis instead. For a single
+// server deployment (the common case for KFAI), this is fine.
 
 import { createHash, randomBytes, randomInt } from 'crypto';
 import { db } from './db';
@@ -21,9 +27,36 @@ export type CaptchaChallengeOut = {
   expiresAt: string; // ISO
 };
 
+// ── In-memory fallback store ──────────────────────────────────────────────────
+type InMemoryChallenge = {
+  challengeId: string;
+  answerHash: string;
+  salt: string;
+  attempts: number;
+  maxAttempts: number;
+  solved: boolean;
+  consumed: boolean;
+  createdAt: number;
+  expiresAt: number;
+};
+
+const inMemoryChallenges = new Map<string, InMemoryChallenge>();
+
+// Cleanup expired entries every 60s
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+function ensureCleanup() {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, ch] of inMemoryChallenges.entries()) {
+      if (ch.expiresAt < now) inMemoryChallenges.delete(id);
+    }
+  }, 60_000);
+  // Don't keep the process alive just for this timer
+  if (cleanupTimer.unref) cleanupTimer.unref();
+}
+
 // ── Generate a math challenge ────────────────────────────────────────────────
-// Always small numbers so the human can solve in their head, but enough variety
-// that bots without OCR/Math reasoning still fail.
 function makeQuestion(): { question: string; answer: number } {
   const op = ['+', '-', '×'][randomInt(0, 3)];
   let a = randomInt(2, 12);
@@ -98,15 +131,33 @@ export async function issueCaptcha(): Promise<CaptchaChallengeOut> {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + CAPTCHA_TTL_MS);
 
-  await db.captchaChallenge.create({
-    data: {
+  // Try DB first; fall back to in-memory if DB fails
+  try {
+    await db.captchaChallenge.create({
+      data: {
+        challengeId,
+        answerHash,
+        salt,
+        maxAttempts: MAX_ATTEMPTS,
+        expiresAt,
+      },
+    });
+  } catch (e: any) {
+    // DB unavailable — use in-memory fallback
+    console.error('[captcha] DB create failed, using in-memory fallback:', e?.message);
+    ensureCleanup();
+    inMemoryChallenges.set(challengeId, {
       challengeId,
       answerHash,
       salt,
+      attempts: 0,
       maxAttempts: MAX_ATTEMPTS,
-      expiresAt,
-    },
-  });
+      solved: false,
+      consumed: false,
+      createdAt: now.getTime(),
+      expiresAt: expiresAt.getTime(),
+    });
+  }
 
   return {
     challengeId,
@@ -120,27 +171,80 @@ export type VerifyResult =
   | { ok: false; reason: 'not_found' | 'expired' | 'already_solved' | 'max_attempts' | 'wrong' | 'consumed'; attemptsLeft?: number };
 
 export async function verifyCaptcha(challengeId: string, answer: string): Promise<VerifyResult> {
-  const ch = await db.captchaChallenge.findUnique({ where: { challengeId } });
-  if (!ch) return { ok: false, reason: 'not_found' };
+  // Try DB first
+  let ch: InMemoryChallenge | null = null;
+  let fromDb = false;
+  try {
+    const dbCh = await db.captchaChallenge.findUnique({ where: { challengeId } });
+    if (dbCh) {
+      ch = {
+        challengeId: dbCh.challengeId,
+        answerHash: dbCh.answerHash,
+        salt: dbCh.salt,
+        attempts: dbCh.attempts,
+        maxAttempts: dbCh.maxAttempts,
+        solved: dbCh.solved,
+        consumed: dbCh.consumed,
+        createdAt: dbCh.createdAt.getTime(),
+        expiresAt: dbCh.expiresAt.getTime(),
+      };
+      fromDb = true;
+    }
+  } catch (e: any) {
+    // DB unavailable — fall back to in-memory
+    console.error('[captcha] DB find failed, using in-memory:', e?.message);
+  }
+
+  // If not in DB (either DB returned null OR DB threw), check in-memory.
+  // This handles the inconsistency where issueCaptcha fell back to in-memory
+  // (because DB write failed) but verifyCaptcha's DB read succeeds (returns null
+  // because the row was never written). In that case, we MUST check in-memory.
+  if (!ch) {
+    ch = inMemoryChallenges.get(challengeId) || null;
+    if (!ch) return { ok: false, reason: 'not_found' };
+  }
+
+  // Validate state
   if (ch.consumed) return { ok: false, reason: 'consumed' };
   if (ch.solved) return { ok: false, reason: 'already_solved' };
-  if (ch.expiresAt.getTime() < Date.now()) return { ok: false, reason: 'expired' };
+  if (ch.expiresAt < Date.now()) return { ok: false, reason: 'expired' };
   if (ch.attempts >= ch.maxAttempts) return { ok: false, reason: 'max_attempts' };
 
   const expected = sha256(String(answer).trim() + ch.salt);
   if (expected !== ch.answerHash) {
     const attempts = ch.attempts + 1;
-    await db.captchaChallenge.update({
-      where: { id: ch.id },
-      data: { attempts },
-    });
+    // Update in whatever store we found it
+    if (fromDb) {
+      try {
+        await db.captchaChallenge.updateMany({
+          where: { challengeId },
+          data: { attempts },
+        });
+      } catch { /* DB error — ignore */ }
+    } else {
+      const mem = inMemoryChallenges.get(challengeId);
+      if (mem) mem.attempts = attempts;
+    }
     return { ok: false, reason: 'wrong', attemptsLeft: Math.max(0, ch.maxAttempts - attempts) };
   }
 
-  await db.captchaChallenge.update({
-    where: { id: ch.id },
-    data: { solved: true, consumed: true },
-  });
+  // Mark as solved
+  if (fromDb) {
+    try {
+      await db.captchaChallenge.updateMany({
+        where: { challengeId },
+        data: { solved: true, consumed: true },
+      });
+    } catch { /* DB error — ignore */ }
+  } else {
+    const mem = inMemoryChallenges.get(challengeId);
+    if (mem) {
+      mem.solved = true;
+      mem.consumed = true;
+      // Delete from memory after a delay (in case of retries)
+      setTimeout(() => inMemoryChallenges.delete(challengeId), 60_000);
+    }
+  }
   return { ok: true, challengeId };
 }
 

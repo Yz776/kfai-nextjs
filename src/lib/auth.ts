@@ -53,40 +53,51 @@ export function hashDeviceFingerprint(signals: Record<string, unknown>): string 
 // ── Revoke all active sessions for a given IP ────────────────────────────────
 // Called before issuing a new session to enforce "1 IP = 1 session".
 // The previous session gets revokeReason='ip_replacement' so we can audit.
+// Best-effort — if DB fails, we still issue the new session.
 export async function revokeSessionsForIp(ip: string, reason: string = 'ip_replacement'): Promise<number> {
-  const result = await db.session.updateMany({
-    where: {
-      ipAddr: ip,
-      revoked: false,
-    },
-    data: { revoked: true, revokeReason: reason },
-  });
-  return result.count;
+  try {
+    const result = await db.session.updateMany({
+      where: {
+        ipAddr: ip,
+        revoked: false,
+      },
+      data: { revoked: true, revokeReason: reason },
+    });
+    return result.count;
+  } catch (e: any) {
+    console.error('[auth] revokeSessionsForIp failed (DB):', e?.message);
+    return 0;
+  }
 }
 
 // ── Register / update a device fingerprint ──────────────────────────────────
+// Best-effort — if DB fails, login continues without device fingerprint tracking.
 async function registerDeviceFingerprint(userId: string, fpHash: string, ip: string, rawSignals: Record<string, unknown>): Promise<void> {
-  const existing = await db.deviceFingerprint.findUnique({ where: { fingerprint: fpHash } });
-  if (existing) {
-    const ips = safeParseArray(existing.ipAddrs);
-    if (!ips.includes(ip)) ips.push(ip);
-    await db.deviceFingerprint.update({
-      where: { id: existing.id },
-      data: {
-        userId,
-        lastSeenAt: new Date(),
-        ipAddrs: JSON.stringify(ips.slice(-20)),
-      },
-    });
-  } else {
-    await db.deviceFingerprint.create({
-      data: {
-        fingerprint: fpHash,
-        userId,
-        ipAddrs: JSON.stringify([ip]),
-        rawSignals: JSON.stringify(rawSignals).slice(0, 4000),
-      },
-    });
+  try {
+    const existing = await db.deviceFingerprint.findUnique({ where: { fingerprint: fpHash } });
+    if (existing) {
+      const ips = safeParseArray(existing.ipAddrs);
+      if (!ips.includes(ip)) ips.push(ip);
+      await db.deviceFingerprint.update({
+        where: { id: existing.id },
+        data: {
+          userId,
+          lastSeenAt: new Date(),
+          ipAddrs: JSON.stringify(ips.slice(-20)),
+        },
+      });
+    } else {
+      await db.deviceFingerprint.create({
+        data: {
+          fingerprint: fpHash,
+          userId,
+          ipAddrs: JSON.stringify([ip]),
+          rawSignals: JSON.stringify(rawSignals).slice(0, 4000),
+        },
+      });
+    }
+  } catch (e: any) {
+    console.error('[auth] registerDeviceFingerprint failed (DB):', e?.message);
   }
 }
 
@@ -109,27 +120,33 @@ export async function loginWithCaptcha(
 ): Promise<AuthContext> {
   const authId = deriveAuthId(challengeId);
 
-  // Upsert user
-  let user = await db.user.findUnique({ where: { authId } });
-  if (!user) {
-    user = await db.user.create({
-      data: {
-        authId,
-        displayName: 'guest-' + authId.slice(0, 6),
-      },
-    });
-    await db.userEnvironment.create({
-      data: {
-        userId: user.id,
-        variables: JSON.stringify({ notes: '', scratch: '' }),
-        prefs: JSON.stringify({ model: 'opencode/big-pickle', theme: 'dark' }),
-      },
-    });
-  } else {
-    await db.user.update({
-      where: { id: user.id },
-      data: { lastSeenAt: new Date() },
-    });
+  // Upsert user — wrap in try/catch so DB issues don't block login
+  let user;
+  try {
+    user = await db.user.findUnique({ where: { authId } });
+    if (!user) {
+      user = await db.user.create({
+        data: {
+          authId,
+          displayName: 'guest-' + authId.slice(0, 6),
+        },
+      });
+      await db.userEnvironment.create({
+        data: {
+          userId: user.id,
+          variables: JSON.stringify({ notes: '', scratch: '' }),
+          prefs: JSON.stringify({ model: 'opencode/big-pickle', theme: 'dark' }),
+        },
+      });
+    } else {
+      await db.user.update({
+        where: { id: user.id },
+        data: { lastSeenAt: new Date() },
+      });
+    }
+  } catch (e: any) {
+    console.error('[auth] user upsert failed (DB):', e?.message);
+    throw new Error('Database unavailable — cannot create user. Please run db:push.');
   }
 
   // ── ENFORCE 1 IP = 1 SESSION ────────────────────────────────────────────
@@ -144,16 +161,22 @@ export async function loginWithCaptcha(
   // ── Issue new session bound to (IP, deviceFingerprint) ───────────────────
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
-  const session = await db.session.create({
-    data: {
-      userId: user.id,
-      token,
-      userAgent: meta.userAgent?.slice(0, 200),
-      ipAddr: meta.ip.slice(0, 64),
-      deviceFingerprint: meta.deviceFingerprint,
-      expiresAt,
-    },
-  });
+  let session;
+  try {
+    session = await db.session.create({
+      data: {
+        userId: user.id,
+        token,
+        userAgent: meta.userAgent?.slice(0, 200),
+        ipAddr: meta.ip.slice(0, 64),
+        deviceFingerprint: meta.deviceFingerprint,
+        expiresAt,
+      },
+    });
+  } catch (e: any) {
+    console.error('[auth] session create failed (DB):', e?.message);
+    throw new Error('Database unavailable — cannot create session. Please run db:push.');
+  }
 
   return {
     userId: user.id,
