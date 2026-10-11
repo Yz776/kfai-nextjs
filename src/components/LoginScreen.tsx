@@ -75,8 +75,6 @@ export function LoginScreen({ onLoggedIn }: Props) {
   useEffect(() => {
     startBehavioralTracking();
     renderTsRef.current = Date.now();
-    if (loginAttemptedRef.current) return;
-    loginAttemptedRef.current = true;
     runAutoLogin();
   }, [runAutoLogin]);
 
