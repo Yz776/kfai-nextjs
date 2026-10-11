@@ -208,446 +208,53 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
   }
   const raw: Record<string, string> = {};
 
-  // ── Layer 1: Rendering fingerprint (GPU/driver) ───────────────────────────
+  // ── FAST FINGERPRINT ONLY (for login) ──────────────────────────────────────
+  // All SYNCHRONOUS — no async waits, no timeouts, no hangs.
+  // The full 100+ signal fingerprint is collected in background after login.
+
   raw.canvas = getCanvasFingerprint().slice(0, 200);
   const gl = getWebGLFingerprint();
   raw.glVendor = gl.vendor;
   raw.glRenderer = gl.renderer;
-  // WebGL2 — additional parameters that differ per GPU
-  try {
-    const c2 = document.createElement('canvas');
-    const gl2 = c2.getContext('webgl2') as WebGL2RenderingContext | null;
-    if (gl2) {
-      raw.gl2MaxTexSize = String(gl2.getParameter(gl2.MAX_TEXTURE_SIZE));
-      raw.gl2Max3dTexSize = String(gl2.getParameter(gl2.MAX_3D_TEXTURE_SIZE));
-      raw.gl2MaxRenderBufSize = String(gl2.getParameter(gl2.MAX_RENDERBUFFER_SIZE));
-      raw.gl2MaxViewportDims = String((gl2.getParameter(gl2.MAX_VIEWPORT_DIMS) as Int32Array)?.[0]);
-      raw.gl2MaxVertexAttr = String(gl2.getParameter(gl2.MAX_VERTEX_ATTRIBS));
-      raw.gl2AliasedPointSize = String(gl2.getParameter(gl2.ALIASED_POINT_SIZE_RANGE));
-    }
-  } catch { raw.gl2 = 'err'; }
-
-  // ── Layer 2: Audio fingerprint (CPU/soundcard) — with 3s timeout ──────────────
-  try {
-    raw.audio = await Promise.race([
-      getAudioFingerprint(),
-      new Promise<string>((resolve) => setTimeout(() => resolve('audio-timeout'), 3000)),
-    ]);
-  } catch { raw.audio = 'audio-err'; }
-
-  // ── Layer 3: Font list (installed fonts) ────────────────────────────────────
   raw.fonts = getFontList();
-
-  // ── Layer 4: Screen + display ────────────────────────────────────────────────
   raw.screen = `${screen.width}x${screen.height}x${screen.colorDepth}x${screen.pixelDepth || 0}`;
   raw.availScreen = `${screen.availWidth}x${screen.availHeight}`;
   raw.devicePixelRatio = String(window.devicePixelRatio || 1);
-  raw.screenOrientation = screen.orientation?.type || 'unknown';
   raw.innerWidth = `${window.innerWidth}x${window.innerHeight}`;
-  raw.outerWidth = `${window.outerWidth}x${window.outerHeight}`;
-
-  // ── Layer 5: Locale + timezone ───────────────────────────────────────────────
   raw.tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
   raw.tzOffset = String(new Date().getTimezoneOffset());
   raw.lang = navigator.language || 'unknown';
   raw.langs = (navigator.languages || []).join(',');
-  try {
-    raw.locale = Intl.NumberFormat().resolvedOptions().locale;
-    raw.calendar = Intl.DateTimeFormat().resolvedOptions().calendar;
-    raw.numberingSystem = Intl.DateTimeFormat().resolvedOptions().numberingSystem;
-  } catch {}
-
-  // ── Layer 6: Hardware ──────────────────────────────────────────────────────
   raw.platform = navigator.platform || 'unknown';
   raw.cpuCores = String((navigator as any).hardwareConcurrency || 0);
   raw.memGB = String((navigator as any).deviceMemory || 0);
   raw.maxTouch = String(navigator.maxTouchPoints || 0);
   raw.touch = String(('ontouchstart' in window) || navigator.maxTouchPoints > 0);
-
-  // ── Layer 7: Plugins + MIME types (deprecated but still leak info) ──────────
+  raw.math = `${Math.tan(-1e300)},${Math.sinh(1)},${Math.cosh(10)},${Math.expm1(1)}`;
   try {
     raw.plugins = Array.from(navigator.plugins || []).map((p) => p.name).join(',') || 'none';
-    raw.mimeTypes = Array.from(navigator.mimeTypes || []).map((m) => m.type).join(',') || 'none';
   } catch { raw.plugins = 'err'; }
-
-  // ── Layer 8: Math precision (varies per CPU/architecture) ───────────────────
-  raw.math = `${Math.tan(-1e300)},${Math.sinh(1)},${Math.cosh(10)},${Math.expm1(1)},${Math.tanh(0.5)},${Math.atanh(0.5)}`;
-  // Subtle floating point differences across JS engines
-  raw.mathSin = String(Math.sin(Math.PI));
-  raw.mathCos = String(Math.cos(Math.PI * 0.5));
-  raw.mathExp = String(Math.exp(1));
-
-  // ── Layer 9: Network connection info ───────────────────────────────────────
-  try {
-    const conn = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
-    if (conn) {
-      raw.netEffectiveType = conn.effectiveType || 'unknown';
-      raw.netDownlink = String(conn.downlink || 0);
-      raw.netRtt = String(conn.rtt || 0);
-      raw.netSaveData = String(conn.saveData || false);
-    }
-  } catch {}
-
-  // ── Layer 10: Battery API (mobile/laptop) — with 2s timeout ─────────────────
-  try {
-    const battery = await Promise.race([
-      (navigator as any).getBattery?.(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-    ]);
-    if (battery) {
-      raw.batLevel = String(battery.level);
-      raw.batCharging = String(battery.charging);
-    }
-  } catch {}
-
-  // ── Layer 11: Media devices count — with 2s timeout ────────────────────────
-  try {
-    if (navigator.mediaDevices?.enumerateDevices) {
-      const devices = await Promise.race([
-        navigator.mediaDevices.enumerateDevices(),
-        new Promise<MediaDeviceInfo[]>((resolve) => setTimeout(() => resolve([]), 2000)),
-      ]);
-      raw.mediaAudioIn = String(devices.filter(d => d.kind === 'audioinput').length);
-      raw.mediaAudioOut = String(devices.filter(d => d.kind === 'audiooutput').length);
-      raw.mediaVideoIn = String(devices.filter(d => d.kind === 'videoinput').length);
-    }
-  } catch {}
-
-  // ── Layer 12: Storage estimate ──────────────────────────────────────────────
-  try {
-    if (navigator.storage?.estimate) {
-      const est = await navigator.storage.estimate();
-      raw.storageQuota = String(est.quota || 0);
-      raw.storageUsage = String(est.usage || 0);
-    }
-  } catch {}
-
-  // ── Layer 13: Permissions API (which permissions are granted/denied) ────────
-  try {
-    const permNames = ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read'];
-    const permStates: string[] = [];
-    for (const name of permNames) {
-      try {
-        const result = await navigator.permissions.query({ name: name as PermissionName });
-        permStates.push(`${name}:${result.state}`);
-      } catch { /* unsupported permission */ }
-    }
-    raw.permissions = permStates.join(',');
-  } catch {}
-
-  // ── Layer 14: Speech synthesis voices ───────────────────────────────────────
-  try {
-    const voices = speechSynthesis?.getVoices?.() || [];
-    raw.speechVoices = voices.map(v => `${v.lang}:${v.name}`).slice(0, 5).join(',');
-    raw.speechVoiceCount = String(voices.length);
-  } catch {}
-
-  // ── Layer 15: Performance timing (sub-millisecond CPU fingerprint) ──────────
-  try {
-    const t = performance.now();
-    let sum = 0;
-    for (let i = 0; i < 1000; i++) sum += Math.sqrt(i);
-    raw.perfLoop = String(performance.now() - t);
-    raw.perfTimeOrigin = String(performance.timeOrigin || 0);
-  } catch {}
-
-  // ── Layer 16: WebRTC ICE candidates (local IP — but we don't store IP) ──────
-  // Skip — too privacy-invasive and Cloudflare already knows IP.
-
-  // ── Layer 17: UA-CH (User-Agent Client Hints) — modern replacement for UA ──
   try {
     const uaData = (navigator as any).userAgentData;
     if (uaData) {
       raw.uaMobile = String(uaData.mobile || false);
       raw.uaPlatform = uaData.platform || 'unknown';
-      const brands = uaData.brands?.map((b: any) => `${b.brand}:${b.version}`).join(',') || '';
-      raw.uaBrands = brands;
     }
   } catch {}
-
-  // ── Layer 18: WebGL extensions + shader precision (very unique per GPU) ────
   try {
-    const canvas = document.createElement('canvas');
-    const gl = (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
-    if (gl) {
-      const exts = gl.getSupportedExtensions() || [];
-      raw.glExtCount = String(exts.length);
-      // Hash the extension list (don't store full list — too long, but the
-      // count + sorted hash is enough for fingerprinting)
-      raw.glExtsHash = (await sha256Hex(exts.sort().join(','))).slice(0, 32);
-      // Shader precision format — varies per GPU/driver
-      const sp = (precision: number, shaderType: number) => {
-        try {
-          const fmt = gl.getShaderPrecisionFormat(shaderType, precision);
-          return fmt ? `${fmt.rangeMin}-${fmt.rangeMax}-${fmt.precision}` : 'null';
-        } catch { return 'err'; }
-      };
-      const VS = gl.VERTEX_SHADER;
-      const FS = gl.FRAGMENT_SHADER;
-      raw.glSpVsFloat = sp(gl.HIGH_FLOAT, VS) + ',' + sp(gl.MEDIUM_FLOAT, VS) + ',' + sp(gl.LOW_FLOAT, VS);
-      raw.glSpFsFloat = sp(gl.HIGH_FLOAT, FS) + ',' + sp(gl.MEDIUM_FLOAT, FS) + ',' + sp(gl.LOW_FLOAT, FS);
-      raw.glSpVsInt = sp(gl.HIGH_INT, VS) + ',' + sp(gl.MEDIUM_INT, VS) + ',' + sp(gl.LOW_INT, VS);
-      raw.glSpFsInt = sp(gl.HIGH_INT, FS) + ',' + sp(gl.MEDIUM_INT, FS) + ',' + sp(gl.LOW_INT, FS);
-      // VENDOR + VERSION strings (e.g. "WebKit WebGL" + "WebGL 1.0")
-      raw.glVersionStr = String(gl.getParameter(gl.VERSION) || '').slice(0, 100);
-      raw.glShadingLang = String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION) || '').slice(0, 100);
-      // UNMASKED vendor/renderer (already collected in glVendor/glRenderer, but also get vendorWebGL)
-      raw.glVendorParam = String(gl.getParameter(gl.VENDOR) || '').slice(0, 50);
-    }
-  } catch { raw.glExts = 'err'; }
-
-  // ── Layer 19: Media capabilities + codec support ──────────────────────────────
-  try {
-    if (navigator.mediaCapabilities) {
-      // Test common codecs — which is supported varies per device/browser
-      const codecs = [
-        'video/mp4; codecs="avc1.42E01E"',
-        'video/mp4; codecs="hev1.1.6.L93.B0"',
-        'video/mp4; codecs="hvc1.1.6.L93.B0"',
-        'video/webm; codecs="vp9"',
-        'video/webm; codecs="vp8"',
-        'video/webm; codecs="av01.0.04M.08"',
-        'audio/mp4; codecs="mp4a.40.2"',
-        'audio/mp4; codecs="mp4a.40.5"',
-        'audio/webm; codecs="opus"',
-        'audio/webm; codecs="vorbis"',
-        'audio/wav; codecs="1"',
-        'audio/mpeg; codecs="mp3"',
-      ];
-      const codecResults: string[] = [];
-      for (const codec of codecs) {
-        try {
-          const decoded = await (navigator as any).mediaCapabilities.decodingInfo({ type: 'file', video: { contentType: codec.startsWith('video') ? codec : '', width: 1920, height: 1080, bitrate: 5000000, framerate: 30 }, audio: { contentType: codec.startsWith('audio') ? codec : '', channels: 2, bitrate: 128000, sampleRate: 44100 } });
-          codecResults.push(codec.split(';')[0] + (decoded.supported ? '+s' : '-s'));
-        } catch {}
-      }
-      raw.codecs = codecResults.join(',');
-    }
-  } catch {}
-  // Audio codec support via canPlayType
-  try {
-    const audio = document.createElement('audio');
-    if (audio.canPlayType) {
-      raw.audioMp3 = audio.canPlayType('audio/mpeg') || 'no';
-      raw.audioOgg = audio.canPlayType('audio/ogg; codecs="vorbis"') || 'no';
-      raw.audioOpus = audio.canPlayType('audio/ogg; codecs="opus"') || 'no';
-      raw.audioAac = audio.canPlayType('audio/mp4; codecs="mp4a.40.5"') || 'no';
-      raw.audioFlac = audio.canPlayType('audio/flac') || 'no';
-      raw.audioWav = audio.canPlayType('audio/wav; codecs="1"') || 'no';
-    }
-  } catch {}
-  // Video codec support via canPlayType
-  try {
-    const video = document.createElement('video');
-    if (video.canPlayType) {
-      raw.videoH264 = video.canPlayType('video/mp4; codecs="avc1.42E01E"') || 'no';
-      raw.videoH265 = video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') || 'no';
-      raw.videoVp9 = video.canPlayType('video/webm; codecs="vp9"') || 'no';
-      raw.videoVp8 = video.canPlayType('video/webm; codecs="vp8"') || 'no';
-      raw.videoAv1 = video.canPlayType('video/mp4; codecs="av01.0.04M.08"') || 'no';
-      raw.videoWebm = video.canPlayType('video/webm') || 'no';
-    }
+    const t = performance.now();
+    let sum = 0;
+    for (let i = 0; i < 1000; i++) sum += Math.sqrt(i);
+    raw.perfLoop = String(performance.now() - t);
   } catch {}
 
-  // ── Layer 20: CSS feature detection (which CSS features supported) ───────────
-  try {
-    const features = ['backdrop-filter', 'aspect-ratio', 'container-type', 'inset', 'gap', 'row-gap', 'column-gap', 'object-fit', 'pointer-events', 'user-select', 'mask-image', 'clip-path', 'will-change', 'filter', 'mix-blend-mode', 'backdrop-filter', 'text-decoration-skip-ink', 'font-variation-settings'];
-    const supported: string[] = [];
-    const div = document.createElement('div');
-    document.body.appendChild(div);
-    for (const feat of features) {
-      div.style.cssText = `${feat}: 1px;`;
-      supported.push(feat + ':' + (div.style[feat as any] !== '' ? 'y' : 'n'));
-    }
-    document.body.removeChild(div);
-    raw.cssFeatures = supported.slice(0, 8).join(',');
-  } catch {}
-
-  // ── Layer 21: Media queries (color-gamut, dynamic-range, hover, pointer) ────
-  try {
-    const mqChecks: Record<string, string> = {
-      'color-gamut: srgb': 'cg-srgb',
-      'color-gamut: p3': 'cg-p3',
-      'color-gamut: rec2020': 'cg-rec2020',
-      'dynamic-range: high': 'dr-high',
-      'dynamic-range: standard': 'dr-std',
-      'hover: hover': 'hov-hover',
-      'hover: none': 'hov-none',
-      'pointer: fine': 'ptr-fine',
-      'pointer: coarse': 'ptr-coarse',
-      'pointer: none': 'ptr-none',
-      'prefers-color-scheme: dark': 'cs-dark',
-      'prefers-color-scheme: light': 'cs-light',
-      'prefers-reduced-motion: reduce': 'rm-reduce',
-      'prefers-reduced-motion: no-preference': 'rm-nopref',
-      'forced-colors: active': 'fc-active',
-      'inverted-colors: inverted': 'inv-inverted',
-    };
-    const mqResults: string[] = [];
-    for (const [query, label] of Object.entries(mqChecks)) {
-      const m = matchMedia(`(${query})`);
-      mqResults.push(`${label}:${m.matches ? 'y' : 'n'}`);
-    }
-    raw.mqFeatures = mqResults.join(',');
-  } catch {}
-
-  // ── Layer 22: Gamepad API (controller count — varies per device) ─────────────
-  try {
-    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const connected = Array.from(gamepads).filter(g => g !== null).length;
-    raw.gamepadsConnected = String(connected);
-  } catch {}
-
-  // ── Layer 23: Sensor availability (Accelerometer, Gyroscope) ────────────────
-  try {
-    const sensors: string[] = [];
-    if ('Accelerometer' in window) sensors.push('accel');
-    if ('Gyroscope' in window) sensors.push('gyro');
-    if ('LinearAccelerationSensor' in window) sensors.push('linaccel');
-    if ('GravitySensor' in window) sensors.push('gravity');
-    if ('AbsoluteOrientationSensor' in window) sensors.push('absorient');
-    if ('RelativeOrientationSensor' in window) sensors.push('relorient');
-    if ('AmbientLightSensor' in window) sensors.push('ambient');
-    raw.sensors = sensors.join(',') || 'none';
-  } catch {}
-
-  // ── Layer 24: Vibration + wake lock + clipboard API availability ────────────
-  try {
-    raw.vibration = String('vibrate' in navigator);
-    raw.wakeLock = String('WakeLock' in window || 'wakeLock' in navigator);
-    raw.clipboard = String(!!navigator.clipboard);
-    raw.share = String(!!navigator.share);
-    raw.credentials = String(!!navigator.credentials);
-    raw.serviceWorker = String('serviceWorker' in navigator);
-    raw.pushManager = String('PushManager' in window);
-    raw.bluetooth = String(!!(navigator as any).bluetooth);
-    raw.usb = String(!!(navigator as any).usb);
-    raw.serial = String(!!(navigator as any).serial);
-    raw.hid = String(!!(navigator as any).hid);
-    raw.gpu = String(!!(navigator as any).gpu); // WebGPU
-    raw.ads = String('Ads' in window); // nothing yet
-    raw.webShare = String('share' in navigator);
-  } catch {}
-
-  // ── Layer 25: Performance timing (sub-millisecond CPU fingerprint) ──────────
-  // Already in Layer 15 — but let's add more variations
-  try {
-    // SHA-256 hash of fixed string — timing varies per CPU
-    const start = performance.now();
-    for (let i = 0; i < 50; i++) {
-      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('kfai-fp-test-' + i));
-    }
-    raw.cryptoTime = String(performance.now() - start);
-    // Worker round-trip timing (if available)
-    if (typeof Worker !== 'undefined') {
-      const workerStart = performance.now();
-      const workerCode = 'self.onmessage = function(e) { let s = 0; for (let i = 0; i < 10000; i++) s += Math.sqrt(i); self.postMessage(s); };';
-      const blob = new Blob([workerCode], { type: 'application/javascript' });
-      const worker = new Worker(URL.createObjectURL(blob));
-      await new Promise((resolve) => {
-        worker.onmessage = () => { resolve(null); };
-        worker.postMessage('start');
-      });
-      worker.terminate();
-      raw.workerTime = String(performance.now() - workerStart);
-    }
-  } catch {}
-
-  // ── Layer 26: Touch pressure (webkitForce — iOS specific) ────────────────────
-  try {
-    // Check if Touch events have force property
-    const touch = TouchEvent ? new TouchEvent('touchstart') : null;
-    if (touch && 'force' in Touch.prototype) raw.touchForce = 'yes';
-    else raw.touchForce = 'no';
-  } catch { raw.touchForce = 'err'; }
-
-  // ── Layer 27: DOMRect precision (layout engine fingerprint) ──────────────────
-  try {
-    const div = document.createElement('div');
-    div.style.cssText = 'position:absolute;left:10.5px;top:20.7px;width:100.3px;height:50.2px;';
-    document.body.appendChild(div);
-    const rect = div.getBoundingClientRect();
-    raw.domRect = `${rect.left},${rect.top},${rect.width},${rect.height}`;
-    document.body.removeChild(div);
-  } catch {}
-
-  // ── Layer 28: WebRTC ICE candidate gathering (non-blocking, 500ms max) ──────
-  // We DON'T store the actual IP — we store only a HASH of the candidate
-  // summary (network type + protocol). This still fingerprints the local
-  // network setup without exposing the user's IP address.
-  // Uses Promise.race with timeout so it never blocks the UI for long.
-  try {
-    raw.iceSig = await Promise.race([
-      (async () => {
-        const rtc = new RTCPeerConnection({ iceServers: [] });
-        rtc.createDataChannel('');
-        const candidates: string[] = [];
-        const done = new Promise<void>((resolve) => {
-          const timer = setTimeout(() => { resolve(); }, 400);
-          rtc.onicecandidate = (e) => {
-            if (e.candidate === null) { clearTimeout(timer); resolve(); }
-            else if (e.candidate) {
-              const c = e.candidate.candidate.split(' ');
-              if (c.length >= 7) candidates.push(`${c[7] || ''}:${c[2] || ''}:${c[5] || ''}`);
-            }
-          };
-        });
-        await rtc.createOffer().then((o) => rtc.setLocalDescription(o));
-        await done;
-        rtc.close();
-        if (candidates.length > 0) {
-          return (await sha256Hex(candidates.sort().join(','))).slice(0, 32);
-        }
-        return 'none';
-      })(),
-      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 500)),
-    ]);
-  } catch { raw.iceSig = 'err'; }
-
-  // ── Layer 29: Custom protocol handlers (registered apps) ─────────────────────
-  try {
-    if (typeof (navigator as any).registerProtocolHandler === 'function') {
-      raw.protocolHandler = 'supported';
-    } else {
-      raw.protocolHandler = 'unsupported';
-    }
-  } catch {}
-
-  // ── Layer 30: Color depth + pixel depth (more granular) ──────────────────────
-  raw.colorDepth = String(screen.colorDepth);
-  raw.pixelDepth = String(screen.pixelDepth);
-
-  // ── Layer 31: Animation frame precision ─────────────────────────────────────
-  try {
-    const rafStart = performance.now();
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-    raw.rafInterval = String(performance.now() - rafStart);
-  } catch {}
-
-  // ── Layer 32: Image decode timing (varies per GPU/driver) ────────────────────
-  try {
-    const imgStart = performance.now();
-    const img = new Image();
-    await new Promise<void>((resolve) => {
-      img.onload = () => resolve();
-      img.onerror = () => resolve();
-      img.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
-      setTimeout(resolve, 500);
-    });
-    raw.imgDecode = String(performance.now() - imgStart);
-  } catch {}
-
-  // ── Compute hash ─────────────────────────────────────────────────────────────
-  // Sort keys for stability, then SHA-256 hash with secret salt.
-  // Bumped to v4 because we added 15+ new signals (WebGL exts, codecs, MQ, etc.)
+  // ── Compute hash (v5 — fast fingerprint only) ───────────────────────────────
   const sorted = Object.keys(raw).sort().map((k) => `${k}=${raw[k]}`).join('|');
-  const hash = await sha256Hex('kfai-fp-v4:' + sorted);
+  const hash = await sha256Hex('kfai-fp-v5:' + sorted);
   cachedFingerprint = hash;
   cachedRawSignals = raw;
   return { hash, raw };
 }
-
 // ── Behavioral biometrics (separate from device fingerprint) ──────────────────
 // Collected only on login screen — measures how the user moves their mouse
 // and types. Used as a SECOND factor beyond device fingerprint.
