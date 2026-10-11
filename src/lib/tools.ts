@@ -181,7 +181,7 @@ async function toolWebSearch(query: string): Promise<ToolResult> {
 
   const results: Array<{ title: string; url: string; snippet: string }> = [];
   // DuckDuckGo HTML result blocks
-  const re = /<a rel="nofollow" class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<a class="result__snippet"[^>]*>(.*?)<\/a>/gs;
+  const re = /<a rel="nofollow" class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
   let m: RegExpExecArray | null;
   let count = 0;
   while ((m = re.exec(html)) !== null && count < 6) {
@@ -274,8 +274,8 @@ async function toolGoogleSearch(query: string): Promise<ToolResult> {
       query: q,
       backend: 'duckduckgo-fallback',
       note: `Brave unavailable (${lastError}); fell back to DuckDuckGo`,
-      result_count: fallback.results?.length ?? 0,
-      results: fallback.results ?? [],
+      result_count: (fallback as any)?.results?.length ?? 0,
+      results: (fallback as any)?.results ?? [],
     };
   }
 

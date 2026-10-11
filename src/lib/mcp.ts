@@ -103,7 +103,7 @@ export async function callMcpTool(name: string, args: Record<string, unknown> = 
     if (ct.includes('text/event-stream')) {
       // Read SSE stream, find the data: line with our response
       const text = await res.text();
-      const m = text.match(/data:\s*(\{.*\})/s);
+      const m = text.match(/data:\s*(\{[\s\S]*\})/);
       payload = m ? JSON.parse(m[1]) : null;
     } else {
       payload = await res.json();

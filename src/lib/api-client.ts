@@ -473,11 +473,11 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     raw.credentials = String(!!navigator.credentials);
     raw.serviceWorker = String('serviceWorker' in navigator);
     raw.pushManager = String('PushManager' in window);
-    raw.bluetooth = String(!!navigator.bluetooth);
-    raw.usb = String(!!navigator.usb);
-    raw.serial = String(!!navigator.serial);
-    raw.hid = String(!!navigator.hid);
-    raw.gpu = String(!!navigator.gpu); // WebGPU
+    raw.bluetooth = String(!!(navigator as any).bluetooth);
+    raw.usb = String(!!(navigator as any).usb);
+    raw.serial = String(!!(navigator as any).serial);
+    raw.hid = String(!!(navigator as any).hid);
+    raw.gpu = String(!!(navigator as any).gpu); // WebGPU
     raw.ads = String('Ads' in window); // nothing yet
     raw.webShare = String('share' in navigator);
   } catch {}
@@ -556,7 +556,7 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
 
   // ── Layer 29: Custom protocol handlers (registered apps) ─────────────────────
   try {
-    if (navigator.registerProtocolHandler) {
+    if (typeof (navigator as any).registerProtocolHandler === 'function') {
       raw.protocolHandler = 'supported';
     } else {
       raw.protocolHandler = 'unsupported';
