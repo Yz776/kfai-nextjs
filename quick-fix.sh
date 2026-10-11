@@ -104,6 +104,13 @@ elif command -v npx &>/dev/null; then
 fi
 echo "    ✓ Database siap (semua tabel terbuat)"
 
+# ─── Step 4b: Clear Next.js cache (PENTING untuk production build) ──────────
+echo ""
+echo ">>> [4b/6] Clear Next.js build cache..."
+rm -rf .next/cache 2>/dev/null || true
+rm -rf .next 2>/dev/null || true
+echo "    ✓ Cache dibersihkan (kode baru akan di-compile ulang)"
+
 # ─── Step 5: Fix DB permissions ─────────────────────────────────────────────
 echo ""
 echo ">>> [5/6] Fix database permissions..."
