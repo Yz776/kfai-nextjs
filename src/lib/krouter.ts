@@ -210,7 +210,12 @@ Tools to manage persistent files:
 - file_load(filename) — read a text file. Returns found=false if not exists.
 - file_append(filename, content) — append text to a file (creates if not exists). Useful for logs, journals.
 - file_list(subdir?) — list files in sandbox (or in a subdir).
+- file_tree(subdir?) — show recursive directory tree with sizes and dates.
+- file_copy(source, dest) — copy a file within the sandbox.
+- file_move(source, dest) — move or rename a file within the sandbox.
 - file_delete(filename) — permanently delete a file.
+- diff_files(fileA, fileB) — compare two files and show differences.
+- code_format(code, language) — beautify JSON, CSS, HTML, JS, or TS code.
 
 bash() also runs in the sandbox cwd:
 - File redirects (> and >>) are ALLOWED — e.g. \`echo "hello" > out.txt\`, \`python3 -c "..." > result.json\`
@@ -1189,6 +1194,79 @@ export const TOOLS: ToolDef[] = [
           filename: { type: 'string', description: 'Filename (relative to sandbox root).' },
         },
         required: ['filename'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'file_copy',
+      description: 'Copy a file within the CURRENT user\'s sandbox. Source and destination are relative to sandbox root. Subdirectories supported.',
+      parameters: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: 'Source filename (relative to sandbox root).' },
+          dest: { type: 'string', description: 'Destination filename (relative to sandbox root).' },
+        },
+        required: ['source', 'dest'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'file_move',
+      description: 'Move or rename a file within the CURRENT user\'s sandbox. Source is deleted after copy.',
+      parameters: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: 'Source filename.' },
+          dest: { type: 'string', description: 'Destination filename.' },
+        },
+        required: ['source', 'dest'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'file_tree',
+      description: 'Show a recursive directory tree of the CURRENT user\'s sandbox. Returns nested structure with file sizes, types, and modification dates. Optional subdir parameter to limit to a subdirectory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subdir: { type: 'string', description: 'Optional subdirectory to show tree for (default: entire sandbox).' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'diff_files',
+      description: 'Compare two files in the CURRENT user\'s sandbox and show differences (line-by-line). Returns lines added, removed, and the diff.',
+      parameters: {
+        type: 'object',
+        properties: {
+          fileA: { type: 'string', description: 'First filename (relative to sandbox root).' },
+          fileB: { type: 'string', description: 'Second filename (relative to sandbox root).' },
+        },
+        required: ['fileA', 'fileB'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'code_format',
+      description: 'Beautify/format code. Supports JSON (pretty-print), CSS, HTML, and JavaScript/TypeScript. Useful for cleaning up minified or poorly formatted code before saving to sandbox.',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'The code to format.' },
+          language: { type: 'string', description: 'Language: json, css, html, js, ts (default: json).' },
+        },
+        required: ['code'],
       },
     },
   },

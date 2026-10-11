@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { listKrouterModels } from './krouter';
 import { callMcpTool } from './mcp';
-import { ensureUserWorkdir, envGet, envSet, envDelete, envList, fileSave, fileLoad, fileAppend, fileList, fileDelete } from './user-env';
+import { ensureUserWorkdir, envGet, envSet, envDelete, envList, fileSave, fileLoad, fileAppend, fileList, fileDelete, fileCopy, fileMove, fileTree, diffFiles } from './user-env';
 import { generateDownloadToken } from '../app/api/files/[filename]/route';
 
 export type ToolResult = {
@@ -119,6 +119,12 @@ export async function executeTool(
       case 'file_append':    return await toolFileAppend(ctx, String(args.filename ?? ''), String(args.content ?? ''));
       case 'file_list':      return await toolFileList(ctx, args.subdir ? String(args.subdir) : undefined);
       case 'file_delete':    return await toolFileDelete(ctx, String(args.filename ?? ''));
+      case 'file_copy':      return await toolFileCopy(ctx, String(args.source ?? ''), String(args.dest ?? ''));
+      case 'file_move':      return await toolFileMove(ctx, String(args.source ?? ''), String(args.dest ?? ''));
+      case 'file_tree':      return await toolFileTree(ctx, args.subdir ? String(args.subdir) : undefined);
+      case 'diff_files':     return await toolDiffFiles(ctx, String(args.fileA ?? ''), String(args.fileB ?? ''));
+      // ── Code formatting ──
+      case 'code_format':    return toolCodeFormat(String(args.code ?? ''), String(args.language ?? 'json'));
       // ── Secure file download (signed URL) ──
       case 'file_download_link': return await toolFileDownloadLink(ctx, String(args.filename ?? ''), Number(args.ttlSec ?? 300));
       // ── Vision: analyze image ──
@@ -463,7 +469,7 @@ async function toolListModels(): Promise<ToolResult> {
 async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult> {
   const cmd = command.trim();
   if (!cmd) return { status: 'error', error: 'Empty command' };
-  if (cmd.length > 1500) return { status: 'error', error: 'Command too long (max 1500 chars)' };
+  if (cmd.length > 3000) return { status: 'error', error: 'Command too long (max 3000 chars)' };
 
   // Hard-block dangerous patterns. Allow $((expr)) arithmetic, block $(cmd).
   const blocked = [
@@ -593,7 +599,7 @@ async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult>
       proc.stderr?.on('data', (chunk) => { err += chunk.toString(); });
       const timer = setTimeout(() => {
         proc.kill(9);
-      }, 10000);
+      }, 15000);
       proc.on('close', (code) => {
         clearTimeout(timer);
         resolve(JSON.stringify({ code, out, err }));
@@ -607,8 +613,8 @@ async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult>
     return {
       status: 'done',
       exit_code: code,
-      stdout: (out as string).trim().slice(0, 2000),
-      stderr: (err as string).trim().slice(0, 500),
+      stdout: (out as string).trim().slice(0, 4000),
+      stderr: (err as string).trim().slice(0, 1000),
       sandbox: sandboxLabel,
       cwd,
     };
@@ -1777,5 +1783,93 @@ async function toolVisionAnalyze(ctx: ToolContext | undefined, imageInput: strin
     };
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Vision analysis failed' };
+  }
+}
+
+// ── File copy/move/tree/diff tools ────────────────────────────────────────────
+
+async function toolFileCopy(ctx: ToolContext | undefined, source: string, dest: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_copy' };
+  if (!source.trim() || !dest.trim()) return { status: 'error', error: 'Source and destination required' };
+  try {
+    const r = await fileCopy(ctx.userId, source, dest);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to copy file' };
+  }
+}
+
+async function toolFileMove(ctx: ToolContext | undefined, source: string, dest: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_move' };
+  if (!source.trim() || !dest.trim()) return { status: 'error', error: 'Source and destination required' };
+  try {
+    const r = await fileMove(ctx.userId, source, dest);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to move file' };
+  }
+}
+
+async function toolFileTree(ctx: ToolContext | undefined, subdir?: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_tree' };
+  try {
+    const r = await fileTree(ctx.userId, subdir);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to get file tree' };
+  }
+}
+
+async function toolDiffFiles(ctx: ToolContext | undefined, fileA: string, fileB: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for diff_files' };
+  if (!fileA.trim() || !fileB.trim()) return { status: 'error', error: 'Both filenames required' };
+  try {
+    const r = await diffFiles(ctx.userId, fileA, fileB);
+    return { status: 'done', ...r };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to diff files' };
+  }
+}
+
+// ── Code formatting ──────────────────────────────────────────────────────────
+function toolCodeFormat(code: string, language: string): ToolResult {
+  if (!code.trim()) return { status: 'error', error: 'Empty code input' };
+  try {
+    const lang = language.toLowerCase().trim();
+    if (lang === 'json') {
+      const parsed = JSON.parse(code);
+      return { status: 'done', formatted: JSON.stringify(parsed, null, 2), language: 'json' };
+    }
+    if (lang === 'css' || lang === 'scss') {
+      // Simple CSS beautifier — add newlines after { } and ;
+      let formatted = code
+        .replace(/\s*{\s*/g, ' {\n  ')
+        .replace(/;\s*/g, ';\n  ')
+        .replace(/\s*}\s*/g, '\n}\n')
+        .replace(/\n  \n/g, '\n')
+        .replace(/\n\n+/g, '\n\n')
+        .trim();
+      return { status: 'done', formatted, language: lang };
+    }
+    if (lang === 'html') {
+      // Simple HTML beautifier
+      let formatted = code
+        .replace(/>\s*</g, '>\n<')
+        .replace(/^\s+/gm, (match) => '  '.repeat(Math.floor(match.length / 2)));
+      return { status: 'done', formatted, language: 'html' };
+    }
+    if (lang === 'js' || lang === 'javascript' || lang === 'ts' || lang === 'typescript') {
+      // Simple JS beautifier — add newlines after ; and { }
+      let formatted = code
+        .replace(/;\s*(?!\s*[\]\)])/g, ';\n')
+        .replace(/{\s*/g, '{\n')
+        .replace(/}\s*(?=\S)/g, '}\n')
+        .trim();
+      return { status: 'done', formatted, language: lang };
+    }
+    // Unsupported language — return as-is
+    return { status: 'done', formatted: code, language: lang, note: 'Formatting not supported for this language — returned as-is. Supported: json, css, html, js, ts.' };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to format code' };
   }
 }
