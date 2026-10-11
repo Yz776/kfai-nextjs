@@ -41,6 +41,13 @@ export function deriveAuthId(challengeId: string): string {
   return sha256(challengeId + ':' + AUTH_SECRET);
 }
 
+// ── Derive authId from device fingerprint hash (no captcha needed) ──────────
+// authId = sha256(deviceFpHash + ':' + AUTH_SECRET)
+// Same device → same authId → stable user identity across sessions.
+export function deriveAuthIdFromFingerprint(fpHash: string): string {
+  return sha256(fpHash + ':' + AUTH_SECRET);
+}
+
 // ── Hash device fingerprint signals into a stable identifier ─────────────────
 // The client sends the raw signals object; we hash it server-side so the
 // client cannot predict the final hash and the DB stores only the hash.
@@ -157,6 +164,95 @@ export async function loginWithCaptcha(
 
   // ── Register device fingerprint ────────────────────────────────────────
   await registerDeviceFingerprint(user.id, meta.deviceFingerprint, meta.ip, meta.rawSignals || {});
+
+  // ── Issue new session bound to (IP, deviceFingerprint) ───────────────────
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
+  let session;
+  try {
+    session = await db.session.create({
+      data: {
+        userId: user.id,
+        token,
+        userAgent: meta.userAgent?.slice(0, 200),
+        ipAddr: meta.ip.slice(0, 64),
+        deviceFingerprint: meta.deviceFingerprint,
+        expiresAt,
+      },
+    });
+  } catch (e: any) {
+    console.error('[auth] session create failed (DB):', e?.message);
+    throw new Error('Database unavailable — cannot create session. Please run db:push.');
+  }
+
+  return {
+    userId: user.id,
+    authId: user.authId,
+    sessionId: session.id,
+    token,
+    ipAddr: session.ipAddr,
+    deviceFingerprint: session.deviceFingerprint,
+  };
+}
+
+// ── Find or create a user from device fingerprint (no captcha) ────────────────
+// This is the new login flow — no captcha needed. Device fingerprint IS the
+// auth factor. The user identity is derived from the fingerprint hash:
+//   authId = sha256(fpHash + ':' + AUTH_SECRET)
+//
+// Same device → same authId → same user identity.
+// Different device → different authId → different user (sandbox isolation).
+//
+// STRICT: same as loginWithCaptcha — revoke prior sessions for same IP
+// before issuing new one.
+export async function loginWithDevice(
+  meta: {
+    userAgent?: string;
+    ip: string;
+    deviceFingerprint: string;
+    behavioralSignature?: string;
+    rawSignals?: Record<string, unknown>;
+  },
+): Promise<AuthContext> {
+  const authId = deriveAuthIdFromFingerprint(meta.deviceFingerprint);
+
+  // Upsert user
+  let user;
+  try {
+    user = await db.user.findUnique({ where: { authId } });
+    if (!user) {
+      user = await db.user.create({
+        data: {
+          authId,
+          displayName: 'guest-' + authId.slice(0, 6),
+        },
+      });
+      await db.userEnvironment.create({
+        data: {
+          userId: user.id,
+          variables: JSON.stringify({ notes: '', scratch: '' }),
+          prefs: JSON.stringify({ model: 'opencode/big-pickle', theme: 'dark' }),
+        },
+      });
+    } else {
+      await db.user.update({
+        where: { id: user.id },
+        data: { lastSeenAt: new Date() },
+      });
+    }
+  } catch (e: any) {
+    console.error('[auth] user upsert failed (DB):', e?.message);
+    throw new Error('Database unavailable — cannot create user. Please run db:push.');
+  }
+
+  // ── ENFORCE 1 IP = 1 SESSION ────────────────────────────────────────────
+  await revokeSessionsForIp(meta.ip, 'ip_replacement');
+
+  // ── Register device fingerprint ────────────────────────────────────────
+  await registerDeviceFingerprint(user.id, meta.deviceFingerprint, meta.ip, {
+    ...meta.rawSignals,
+    _behavioral: meta.behavioralSignature,
+  });
 
   // ── Issue new session bound to (IP, deviceFingerprint) ───────────────────
   const token = randomBytes(32).toString('hex');

@@ -1,21 +1,20 @@
-// POST   /api/auth      — verify captcha, validate integrity, enforce 1-IP-1-session, issue session token
+// POST   /api/auth      — verify device fingerprint, issue session token (NO CAPTCHA)
 // GET    /api/auth      — return current user info (token must match IP + device)
 // PATCH  /api/auth      — revoke current session (logout)
 //
-// SECURITY LAYERS:
+// SECURITY LAYERS (no captcha, but device fingerprint is the auth factor):
 //   1. Bot UA check (curl/wget/python-requests → 502)
 //   2. Rate limit: 10 login attempts/hour per IP
 //   3. Honeypot field (_hp must be empty)
-//   4. Time-trap (_ts must be 2-300s in the past — bots submit too fast or replay stale)
-//   5. Device fingerprint required (_fp — invisible hash of canvas/webgl/audio/fonts)
-//   6. Captcha verify (single-use, max 5 attempts)
+//   4. Time-trap (_ts must be 1.5-300s in the past — bots submit too fast)
+//   5. Device fingerprint required (_fp — 40+ signals hashed)
+//   6. Behavioral signature required (_bh — mouse moves + key timings)
 //   7. 1 IP = 1 session: revoke all prior sessions for this IP before issuing new
 //   8. Session bound to (IP, deviceFingerprint) — verified on every subsequent request
 
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyCaptcha } from '@/lib/captcha';
 import {
-  loginWithCaptcha, verifyToken, revokeSession, bearerFromHeaders, fingerprintFromHeaders,
+  loginWithDevice, verifyToken, revokeSession, bearerFromHeaders, fingerprintFromHeaders,
 } from '@/lib/auth';
 import { checkRateLimit, extractIp, isBotUserAgent, validateLoginIntegrity } from '@/lib/anti-abuse';
 import { db } from '@/lib/db';
@@ -33,7 +32,7 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Bad Gateway', { status: 502 });
   }
 
-  // Rate limit — fail-open if DB unavailable (other layers still protect)
+  // Rate limit — fail-open if DB unavailable
   try {
     const rl = await checkRateLimit(ip, 'login_attempt');
     if (!rl.ok) {
@@ -56,45 +55,36 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Integrity check: honeypot, time-trap, device fingerprint presence ────
-  // These checks happen BEFORE captcha verify — fail fast for bots so they
-  // don't burn captcha challenges.
   const integrity = validateLoginIntegrity({
     _hp: body._hp,
     _ts: body._ts,
     _fp: body._fp,
   });
   if (!integrity.ok) {
-    // Return a generic error — never reveal which check failed.
-    return NextResponse.json({ error: 'Verification failed.' }, { status: 403 });
+    return NextResponse.json({ error: 'Verifikasi perangkat gagal.' }, { status: 403 });
   }
 
-  // ── Captcha verify ────────────────────────────────────────────────────────
-  const challengeId = typeof body.challengeId === 'string' ? body.challengeId : '';
-  const answer = typeof body.answer === 'string' ? body.answer.trim() : String(body.answer ?? '');
-  if (!challengeId || !answer) {
-    return NextResponse.json({ error: 'challengeId and answer are required' }, { status: 400 });
+  // ── Behavioral signature check ────────────────────────────────────────────
+  // Bots typically have no mouse movement or key timing data.
+  // We require AT LEAST a behavioral signature string — even if it's just
+  // "m:0,v:0,var:0,k:0,kt:0,s:0,t:0" (mobile users with no mouse).
+  // A bot that doesn't run JS will have _bh = undefined → 403.
+  if (typeof body._bh !== 'string' || body._bh.length < 10) {
+    return NextResponse.json({ error: 'Verifikasi perangkat gagal.' }, { status: 403 });
   }
 
-  const v = await verifyCaptcha(challengeId, answer);
-  if (!v.ok) {
-    const status = v.reason === 'not_found' || v.reason === 'consumed' ? 404 : 401;
-    return NextResponse.json({
-      error: v.reason === 'wrong' ? `Wrong answer. ${v.attemptsLeft} attempts left.` : v.reason,
-      reason: v.reason,
-      attemptsLeft: v.attemptsLeft,
-    }, { status });
-  }
-
-  // ── All checks passed — login ──────────────────────────────────────────────
-  // loginWithCaptcha internally:
-  //   - revokes ALL prior active sessions for this IP (1 IP = 1 session)
-  //   - registers the device fingerprint
-  //   - issues a new session bound to (IP, deviceFingerprint)
+  // ── All checks passed — login (no captcha!) ──────────────────────────────
+  // loginWithDevice:
+  //   - derives authId from device fingerprint hash
+  //   - revokes prior sessions for this IP (1 IP = 1 session)
+  //   - registers device fingerprint in DB
+  //   - issues new session bound to (IP, deviceFingerprint)
   const deviceFingerprint = String(body._fp);
-  const auth = await loginWithCaptcha(challengeId, {
+  const auth = await loginWithDevice({
     userAgent: ua || undefined,
     ip,
     deviceFingerprint,
+    behavioralSignature: typeof body._bh === 'string' ? body._bh : undefined,
     rawSignals: body._fs && typeof body._fs === 'object' ? body._fs : undefined,
   });
 

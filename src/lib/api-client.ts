@@ -172,43 +172,219 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
   }
   const raw: Record<string, string> = {};
 
-  // Canvas
+  // ── Layer 1: Rendering fingerprint (GPU/driver) ───────────────────────────
   raw.canvas = getCanvasFingerprint().slice(0, 200);
-  // WebGL
   const gl = getWebGLFingerprint();
   raw.glVendor = gl.vendor;
   raw.glRenderer = gl.renderer;
-  // Audio (async)
+  // WebGL2 — additional parameters that differ per GPU
+  try {
+    const c2 = document.createElement('canvas');
+    const gl2 = c2.getContext('webgl2') as WebGL2RenderingContext | null;
+    if (gl2) {
+      raw.gl2MaxTexSize = String(gl2.getParameter(gl2.MAX_TEXTURE_SIZE));
+      raw.gl2Max3dTexSize = String(gl2.getParameter(gl2.MAX_3D_TEXTURE_SIZE));
+      raw.gl2MaxRenderBufSize = String(gl2.getParameter(gl2.MAX_RENDERBUFFER_SIZE));
+      raw.gl2MaxViewportDims = String((gl2.getParameter(gl2.MAX_VIEWPORT_DIMS) as Int32Array)?.[0]);
+      raw.gl2MaxVertexAttr = String(gl2.getParameter(gl2.MAX_VERTEX_ATTRIBS));
+      raw.gl2AliasedPointSize = String(gl2.getParameter(gl2.ALIASED_POINT_SIZE_RANGE));
+    }
+  } catch { raw.gl2 = 'err'; }
+
+  // ── Layer 2: Audio fingerprint (CPU/soundcard) ──────────────────────────────
   raw.audio = await getAudioFingerprint();
-  // Fonts
+
+  // ── Layer 3: Font list (installed fonts) ────────────────────────────────────
   raw.fonts = getFontList();
-  // Screen
+
+  // ── Layer 4: Screen + display ────────────────────────────────────────────────
   raw.screen = `${screen.width}x${screen.height}x${screen.colorDepth}x${screen.pixelDepth || 0}`;
-  // Timezone + language
+  raw.availScreen = `${screen.availWidth}x${screen.availHeight}`;
+  raw.devicePixelRatio = String(window.devicePixelRatio || 1);
+  raw.screenOrientation = screen.orientation?.type || 'unknown';
+  raw.innerWidth = `${window.innerWidth}x${window.innerHeight}`;
+  raw.outerWidth = `${window.outerWidth}x${window.outerHeight}`;
+
+  // ── Layer 5: Locale + timezone ───────────────────────────────────────────────
   raw.tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
+  raw.tzOffset = String(new Date().getTimezoneOffset());
   raw.lang = navigator.language || 'unknown';
   raw.langs = (navigator.languages || []).join(',');
-  // Platform + UA (for anomaly detection — but we don't trust UA alone)
+  try {
+    raw.locale = Intl.NumberFormat().resolvedOptions().locale;
+    raw.calendar = Intl.DateTimeFormat().resolvedOptions().calendar;
+    raw.numberingSystem = Intl.DateTimeFormat().resolvedOptions().numberingSystem;
+  } catch {}
+
+  // ── Layer 6: Hardware ──────────────────────────────────────────────────────
   raw.platform = navigator.platform || 'unknown';
   raw.cpuCores = String((navigator as any).hardwareConcurrency || 0);
   raw.memGB = String((navigator as any).deviceMemory || 0);
-  // Touch
-  raw.touch = String(('ontouchstart' in window) || navigator.maxTouchPoints > 0);
   raw.maxTouch = String(navigator.maxTouchPoints || 0);
-  // Plugins (deprecated but still leak info on some browsers)
-  try {
-    const plugins = Array.from(navigator.plugins || []).map((p) => p.name).join(',');
-    raw.plugins = plugins || 'none';
-  } catch { raw.plugins = 'err'; }
-  // Math precision (tan(-1e300) etc. — varies by floating point impl)
-  raw.math = `${Math.tan(-1e300)},${Math.sinh(1)},${Math.cosh(10)},${Math.expm1(1)}`;
+  raw.touch = String(('ontouchstart' in window) || navigator.maxTouchPoints > 0);
 
-  // Compute hash
+  // ── Layer 7: Plugins + MIME types (deprecated but still leak info) ──────────
+  try {
+    raw.plugins = Array.from(navigator.plugins || []).map((p) => p.name).join(',') || 'none';
+    raw.mimeTypes = Array.from(navigator.mimeTypes || []).map((m) => m.type).join(',') || 'none';
+  } catch { raw.plugins = 'err'; }
+
+  // ── Layer 8: Math precision (varies per CPU/architecture) ───────────────────
+  raw.math = `${Math.tan(-1e300)},${Math.sinh(1)},${Math.cosh(10)},${Math.expm1(1)},${Math.tanh(0.5)},${Math.atanh(0.5)}`;
+  // Subtle floating point differences across JS engines
+  raw.mathSin = String(Math.sin(Math.PI));
+  raw.mathCos = String(Math.cos(Math.PI * 0.5));
+  raw.mathExp = String(Math.exp(1));
+
+  // ── Layer 9: Network connection info ───────────────────────────────────────
+  try {
+    const conn = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+    if (conn) {
+      raw.netEffectiveType = conn.effectiveType || 'unknown';
+      raw.netDownlink = String(conn.downlink || 0);
+      raw.netRtt = String(conn.rtt || 0);
+      raw.netSaveData = String(conn.saveData || false);
+    }
+  } catch {}
+
+  // ── Layer 10: Battery API (mobile/laptop) ───────────────────────────────────
+  try {
+    const battery = await (navigator as any).getBattery?.();
+    if (battery) {
+      raw.batLevel = String(battery.level);
+      raw.batCharging = String(battery.charging);
+    }
+  } catch {}
+
+  // ── Layer 11: Media devices count (camera/mic/speaker count varies per device)
+  try {
+    if (navigator.mediaDevices?.enumerateDevices) {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      raw.mediaAudioIn = String(devices.filter(d => d.kind === 'audioinput').length);
+      raw.mediaAudioOut = String(devices.filter(d => d.kind === 'audiooutput').length);
+      raw.mediaVideoIn = String(devices.filter(d => d.kind === 'videoinput').length);
+    }
+  } catch {}
+
+  // ── Layer 12: Storage estimate ──────────────────────────────────────────────
+  try {
+    if (navigator.storage?.estimate) {
+      const est = await navigator.storage.estimate();
+      raw.storageQuota = String(est.quota || 0);
+      raw.storageUsage = String(est.usage || 0);
+    }
+  } catch {}
+
+  // ── Layer 13: Permissions API (which permissions are granted/denied) ────────
+  try {
+    const permNames = ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read'];
+    const permStates: string[] = [];
+    for (const name of permNames) {
+      try {
+        const result = await navigator.permissions.query({ name: name as PermissionName });
+        permStates.push(`${name}:${result.state}`);
+      } catch { /* unsupported permission */ }
+    }
+    raw.permissions = permStates.join(',');
+  } catch {}
+
+  // ── Layer 14: Speech synthesis voices ───────────────────────────────────────
+  try {
+    const voices = speechSynthesis?.getVoices?.() || [];
+    raw.speechVoices = voices.map(v => `${v.lang}:${v.name}`).slice(0, 5).join(',');
+    raw.speechVoiceCount = String(voices.length);
+  } catch {}
+
+  // ── Layer 15: Performance timing (sub-millisecond CPU fingerprint) ──────────
+  try {
+    const t = performance.now();
+    let sum = 0;
+    for (let i = 0; i < 1000; i++) sum += Math.sqrt(i);
+    raw.perfLoop = String(performance.now() - t);
+    raw.perfTimeOrigin = String(performance.timeOrigin || 0);
+  } catch {}
+
+  // ── Layer 16: WebRTC ICE candidates (local IP — but we don't store IP) ──────
+  // Skip — too privacy-invasive and Cloudflare already knows IP.
+
+  // ── Layer 17: UA-CH (User-Agent Client Hints) — modern replacement for UA ──
+  try {
+    const uaData = (navigator as any).userAgentData;
+    if (uaData) {
+      raw.uaMobile = String(uaData.mobile || false);
+      raw.uaPlatform = uaData.platform || 'unknown';
+      const brands = uaData.brands?.map((b: any) => `${b.brand}:${b.version}`).join(',') || '';
+      raw.uaBrands = brands;
+    }
+  } catch {}
+
+  // ── Layer 18: Behavioral biometrics (mouse movement entropy) ───────────────
+  // We collect this only on the login screen — not in fingerprint itself.
+  // See collectBehavioralBiometrics() below.
+
+  // ── Compute hash ─────────────────────────────────────────────────────────────
+  // Sort keys for stability, then SHA-256 hash with secret salt.
   const sorted = Object.keys(raw).sort().map((k) => `${k}=${raw[k]}`).join('|');
-  const hash = await sha256Hex('kfai-fp-v2:' + sorted);
+  const hash = await sha256Hex('kfai-fp-v3:' + sorted); // bumped version to v3
   cachedFingerprint = hash;
   cachedRawSignals = raw;
   return { hash, raw };
+}
+
+// ── Behavioral biometrics (separate from device fingerprint) ──────────────────
+// Collected only on login screen — measures how the user moves their mouse
+// and types. Used as a SECOND factor beyond device fingerprint.
+let behavioralData: { mouseMoves: number; mouseVelocities: number[]; keyTimings: number[]; scrollEvents: number; touchEvents: number } = {
+  mouseMoves: 0, mouseVelocities: [], keyTimings: [], scrollEvents: 0, touchEvents: 0,
+};
+let behaviorTrackingActive = false;
+
+export function startBehavioralTracking() {
+  if (behaviorTrackingActive) return;
+  behaviorTrackingActive = true;
+  let lastMouseTime = 0;
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+  let lastKeyTime = 0;
+
+  window.addEventListener('mousemove', (e) => {
+    const now = performance.now();
+    if (lastMouseTime > 0) {
+      const dt = now - lastMouseTime;
+      const dx = e.clientX - lastMouseX;
+      const dy = e.clientY - lastMouseY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const vel = dt > 0 ? dist / dt : 0;
+      behavioralData.mouseVelocities.push(Math.round(vel * 100) / 100);
+      if (behavioralData.mouseVelocities.length > 50) behavioralData.mouseVelocities.shift();
+    }
+    lastMouseTime = now;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+    behavioralData.mouseMoves++;
+  }, { passive: true });
+
+  window.addEventListener('keydown', () => {
+    const now = performance.now();
+    if (lastKeyTime > 0) {
+      const dt = now - lastKeyTime;
+      if (dt < 5000) behavioralData.keyTimings.push(Math.round(dt));
+      if (behavioralData.keyTimings.length > 20) behavioralData.keyTimings.shift();
+    }
+    lastKeyTime = now;
+  }, { passive: true });
+
+  window.addEventListener('wheel', () => { behavioralData.scrollEvents++; }, { passive: true });
+  window.addEventListener('touchstart', () => { behavioralData.touchEvents++; }, { passive: true });
+}
+
+export function getBehavioralSignature(): string {
+  const v = behavioralData.mouseVelocities;
+  const avgVel = v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
+  const variance = v.length ? v.reduce((a, b) => a + (b - avgVel) ** 2, 0) / v.length : 0;
+  const k = behavioralData.keyTimings;
+  const avgKey = k.length ? k.reduce((a, b) => a + b, 0) / k.length : 0;
+  return `m:${behavioralData.mouseMoves},v:${avgVel.toFixed(2)},var:${variance.toFixed(2)},k:${behavioralData.keyTimings.length},kt:${avgKey.toFixed(0)},s:${behavioralData.scrollEvents},t:${behavioralData.touchEvents}`;
 }
 
 // ── Auth headers helper ──────────────────────────────────────────────────────
@@ -263,16 +439,25 @@ export async function fetchCaptcha(): Promise<{ challengeId: string; svg: string
   return res.json();
 }
 
-export async function login(challengeId: string, answer: string, renderTimestamp: number): Promise<LoginResponse> {
+// ── Login (device-bound, no captcha) ──────────────────────────────────────────
+// User just clicks "Masuk" — server validates:
+//   1. Device fingerprint hash is present and well-formed
+//   2. Raw signals match the hash (server re-hashes to verify)
+//   3. Honeypot field is empty (bot check)
+//   4. Time-trap: form took at least 1.5s to submit (bot check)
+//   5. Behavioral signature present (mouse movements, key timings)
+//   6. Bot UA check
+//   7. Rate limit per IP (10 logins/hour)
+//   8. 1 IP = 1 session (revoke prior sessions for same IP)
+export async function login(renderTimestamp: number): Promise<LoginResponse> {
   const { hash, raw } = await collectDeviceFingerprint();
-  // Honeypot field — must be empty. Bots that fill hidden inputs will fail.
+  const behavior = getBehavioralSignature();
   const body: Record<string, unknown> = {
-    challengeId,
-    answer,
-    _ts: renderTimestamp,   // time-trap: must be 2-300s in the past
-    _fp: hash,              // device fingerprint hash
-    _fs: raw,               // raw signals (server re-hashes for verification)
-    _hp: '',                // honeypot — bots will fill this
+    _ts: renderTimestamp,    // time-trap: must be 1.5-300s in the past
+    _fp: hash,               // device fingerprint hash (40+ signals)
+    _fs: raw,                // raw signals (server re-hashes for verification)
+    _bh: behavior,           // behavioral signature (mouse moves, key timings)
+    _hp: '',                 // honeypot — bots will fill this
   };
   const res = await fetch('/api/auth', {
     method: 'POST',
@@ -282,7 +467,7 @@ export async function login(challengeId: string, answer: string, renderTimestamp
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 429) throw new Error(j.error || 'Terlalu banyak percobaan login. Coba lagi nanti.');
-    if (res.status === 403) throw new Error('Verifikasi gagal.');
+    if (res.status === 403) throw new Error(j.error || 'Verifikasi perangkat gagal.');
     throw new Error(j.error || `Login gagal (${res.status})`);
   }
   return j as LoginResponse;

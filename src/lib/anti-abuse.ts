@@ -124,19 +124,20 @@ export function validateLoginIntegrity(body: {
   if (body._hp && body._hp.trim().length > 0) {
     return { ok: false, reason: 'honeypot_filled', details: 'honeypot field was filled' };
   }
-  // Time-trap: form must take at least 2s to submit, max 5min (anti-stale)
+  // Time-trap: form must take at least 1.5s to submit (device fingerprint
+  // collection takes ~1s naturally), max 5min (anti-stale)
   if (!body._ts || typeof body._ts !== 'number') {
     return { ok: false, reason: 'missing_timestamp' };
   }
   const elapsed = Date.now() - body._ts;
-  if (elapsed < 2000) {
+  if (elapsed < 1500) {
     return { ok: false, reason: 'too_fast', details: `submitted in ${elapsed}ms` };
   }
   if (elapsed > 5 * 60 * 1000) {
     return { ok: false, reason: 'invalid_timestamp', details: `stale form (${elapsed}ms)` };
   }
-  // Device fingerprint required
-  if (!body._fp || typeof body._fp !== 'string' || body._fp.length < 32) {
+  // Device fingerprint required (must be 64 chars SHA-256 hash)
+  if (!body._fp || typeof body._fp !== 'string' || body._fp.length < 64) {
     return { ok: false, reason: 'missing_timestamp', details: 'device fingerprint missing or too short' };
   }
   return { ok: true };
