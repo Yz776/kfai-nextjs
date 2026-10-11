@@ -24,7 +24,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
-const MAX_ITERS = 12;
+const MAX_ITERS = 20;
 const MAX_HISTORY = 20;
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -179,6 +179,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       let objectiveComplete = false;
       let consecutiveUnknownTool = 0;
       let nudgeInjected = false;
+      let lastToolName: string | null = null;
+      let repeatedToolCount = 0;
+      let stuckNudgeInjected = false;
+      // Collect all tool results for fallback context
+      const collectedToolResults: { name: string; result: any }[] = [];
       let lastAssistantId: string | null = null;
 
       for (let iter = 1; iter <= MAX_ITERS; iter++) {
@@ -302,6 +307,8 @@ export async function POST(req: NextRequest): Promise<Response> {
             status: toolResult.status,
             iter,
           });
+          // Collect for fallback context
+          collectedToolResults.push({ name: tc.name, result: toolResult });
           allMessages.push({
             role: 'tool',
             tool_call_id: tc.id,
@@ -309,15 +316,50 @@ export async function POST(req: NextRequest): Promise<Response> {
           });
         }
 
-        // Update consecutive-unknown counter.
+        // ── Detect "stuck" pattern: same tool called 3+ times in a row ──────────
+        const currentToolName = result.tool_calls[0]?.name || null;
+        if (currentToolName && currentToolName === lastToolName) {
+          repeatedToolCount++;
+          if (repeatedToolCount >= 3 && !stuckNudgeInjected) {
+            stuckNudgeInjected = true;
+            allMessages.push({
+              role: 'system',
+              content:
+                `You have called the "${currentToolName}" tool ${repeatedToolCount + 1} times in a row. ` +
+                'This suggests you are stuck in a loop. STOP calling the same tool. ' +
+                'Look at the results you already have and write your final answer NOW based on what you know. ' +
+                'If you truly need more information, try a DIFFERENT approach or tool. ' +
+                'If you cannot complete the task, call task_complete() with what you have so far.',
+            });
+          }
+        } else {
+          repeatedToolCount = 0;
+        }
+        lastToolName = currentToolName;
+
+        // ── Unknown tool nudge ─────────────────────────────────────────────────
         if (iterHadUnknownTool) {
           consecutiveUnknownTool++;
-          if (consecutiveUnknownTool >= 2 && !nudgeInjected) {
+          if (consecutiveUnknownTool >= 1 && !nudgeInjected) {
             nudgeInjected = true;
             allMessages.push({
               role: 'system',
               content:
-                'You keep trying to call tools that are NOT available in this environment. The ONLY tools that work here are: plan, reflect, task_complete, google_search, web_search, calculator, datetime, http_fetch, list_models, bash, weather, currency_convert, ip_lookup, uuid, hash, timestamp_convert, word_count, json_format, base64, color_convert, env_get, env_set, env_delete, env_list, notes_save, notes_load, krouter_fetch, krouter_status, krouter_usage, krouter_recent_logs, krouter_list_models, krouter_list_providers, krouter_list_virtual_keys, krouter_list_prompts, krouter_model_health, krouter_cache, krouter_system, krouter_proxy_pool. If you have enough information to answer, STOP calling tools and write your final answer directly in the content stream.',
+                'IMPORTANT: You just tried to call a tool that does NOT exist. ' +
+                'The ONLY tools available are: plan, reflect, task_complete, ' +
+                'google_search, web_search, calculator, datetime, http_fetch, list_models, bash, ' +
+                'weather, currency_convert, ip_lookup, uuid, hash, timestamp_convert, ' +
+                'word_count, json_format, base64, color_convert, ' +
+                'env_get, env_set, env_delete, env_list, notes_save, notes_load, ' +
+                'file_save, file_load, file_append, file_list, file_tree, file_copy, file_move, ' +
+                'file_delete, diff_files, code_format, file_download_link, vision_analyze, ' +
+                'krouter_fetch, krouter_status, krouter_usage, krouter_recent_logs, ' +
+                'krouter_list_models, krouter_list_providers, krouter_list_virtual_keys, ' +
+                'krouter_list_prompts, krouter_model_health, krouter_cache, krouter_system, krouter_proxy_pool. ' +
+                'DO NOT call write, read, edit, glob, grep, ls, webfetch, websearch, skill, task, todowrite — they do NOT work. ' +
+                'Use file_save instead of write, file_load instead of read, file_list instead of glob/ls, ' +
+                'google_search instead of websearch, http_fetch instead of webfetch. ' +
+                'If you have enough info, STOP calling tools and write your answer directly.',
             });
           }
         } else {
@@ -333,10 +375,32 @@ export async function POST(req: NextRequest): Promise<Response> {
       }
 
       // ── Fallback if loop ran out without producing text ──────────────────────
+      // Build a helpful fallback message using collected tool results instead of
+      // a generic "I couldn't do it" message.
       if (!hadError && !objectiveComplete && !finalText && !abortCtrl.signal.aborted) {
-        const fallback =
-          'Maaf, saya tidak bisa menyelesaikan permintaan ini setelah beberapa percobaan. ' +
-          'Silakan coba pertanyaan yang lebih spesifik.';
+        // Build fallback from collected context
+        let fallback = '';
+        if (collectedToolResults.length > 0) {
+          // Summarize what tools were called and their results
+          const toolSummary = collectedToolResults.slice(-5).map((t, i) => {
+            const r = t.result;
+            if (r.status === 'done') {
+              if (r.stdout) return `${t.name}: ${String(r.stdout).slice(0, 100)}`;
+              if (r.result !== undefined) return `${t.name}: ${JSON.stringify(r.result).slice(0, 100)}`;
+              return `${t.name}: done`;
+            }
+            return `${t.name}: ${r.error || 'error'}`;
+          }).join('\n');
+
+          fallback =
+            `Saya sudah menjalankan ${collectedToolResults.length} tool(s) tetapi belum sempat membuat ringkasan akhir.\n\n` +
+            `Hasil yang sudah didapat:\n${toolSummary}\n\n` +
+            `Berdasarkan hasil di atas, berikut jawaban saya:\n`;
+        } else {
+          fallback =
+            'Saya tidak bisa menyelesaikan permintaan ini. ' +
+            'Coba pertanyaan yang lebih spesifik, atau pecah jadi langkah-langkah kecil.';
+        }
         finalText = fallback;
         // Persist fallback as assistant message if there isn't one yet
         if (lastAssistantId === null) {

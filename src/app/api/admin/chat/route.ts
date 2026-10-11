@@ -11,7 +11,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
-const MAX_ITERS = 12;
+const MAX_ITERS = 20;
 const ADMIN_SECRET = process.env.KFAI_AUTH_SECRET || 'kfai-default-auth-secret-v1';
 const ADMIN_KEY = process.env.KF_AI_ADMIN_KEY || '';
 
