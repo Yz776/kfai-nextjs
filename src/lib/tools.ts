@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import { listKrouterModels } from './krouter';
 import { callMcpTool } from './mcp';
 import { ensureUserWorkdir, envGet, envSet, envDelete, envList, fileSave, fileLoad, fileAppend, fileList, fileDelete } from './user-env';
+import { generateDownloadToken } from '../app/api/files/[filename]/route';
 
 export type ToolResult = {
   status: 'done' | 'error';
@@ -118,6 +119,10 @@ export async function executeTool(
       case 'file_append':    return await toolFileAppend(ctx, String(args.filename ?? ''), String(args.content ?? ''));
       case 'file_list':      return await toolFileList(ctx, args.subdir ? String(args.subdir) : undefined);
       case 'file_delete':    return await toolFileDelete(ctx, String(args.filename ?? ''));
+      // ── Secure file download (signed URL) ──
+      case 'file_download_link': return await toolFileDownloadLink(ctx, String(args.filename ?? ''), Number(args.ttlSec ?? 300));
+      // ── Vision: analyze image ──
+      case 'vision_analyze':  return await toolVisionAnalyze(ctx, String(args.image ?? args.imageUrl ?? ''), String(args.prompt ?? 'Describe this image.'), typeof args.model === 'string' ? args.model : undefined);
       default: {
         // Built-in model tools that don't exist in our environment — give a helpful
         // redirect message so the model knows which KFAI tool to use instead.
@@ -1629,5 +1634,148 @@ async function toolFileDelete(ctx: ToolContext | undefined, filename: string): P
     return { status: 'done', ...r };
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Failed to delete file' };
+  }
+}
+
+// ── Secure file download link ──────────────────────────────────────────────────
+// Returns a signed URL that the user can click in the browser to download a file
+// from their sandbox. The URL is short-lived (default 5 min) and tied to the
+// user's auth — even if shared, it expires quickly.
+async function toolFileDownloadLink(ctx: ToolContext | undefined, filename: string, ttlSec: number): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for file_download_link' };
+  const fn = filename.trim();
+  if (!fn) return { status: 'error', error: 'Empty filename' };
+  // Clamp TTL: 1min - 1hr
+  const ttl = Math.min(Math.max(ttlSec || 300, 60), 3600);
+  try {
+    // Verify file exists first
+    const exists = await fileLoad(ctx.userId, fn);
+    if (!exists.found) {
+      return { status: 'error', error: `File not found in sandbox: ${fn}` };
+    }
+    const token = generateDownloadToken(ctx.userId, fn, ttl);
+    const url = `/api/files/${encodeURIComponent(fn)}?token=${token}`;
+    const expiresAt = new Date(Date.now() + ttl * 1000).toISOString();
+    return {
+      status: 'done',
+      url,
+      filename: fn,
+      expiresAt,
+      ttlSec: ttl,
+      // Note for the AI: tell the user to click the link
+      instruction: `Share this link with the user so they can download the file. The link expires in ${Math.floor(ttl / 60)} minutes.`,
+    };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Failed to generate download link' };
+  }
+}
+
+// ── Vision: analyze image ──────────────────────────────────────────────────────
+// Calls /api/vision internally (same server) with the user's auth context.
+// Supports:
+//   - Sandbox filename (e.g. "uploads/abc.png") — loaded from user sandbox
+//   - Data URL (data:image/...;base64,...) — inline
+//   - HTTP URL — fetched server-side
+async function toolVisionAnalyze(ctx: ToolContext | undefined, imageInput: string, prompt: string, model?: string): Promise<ToolResult> {
+  if (!ctx) return { status: 'error', error: 'Auth required for vision_analyze' };
+  const img = imageInput.trim();
+  if (!img) return { status: 'error', error: 'Empty image input. Provide a sandbox filename, data URL, or HTTP URL.' };
+  if (!prompt || prompt.length === 0) prompt = 'Describe this image.';
+
+  // Determine base URL — same server
+  const baseUrl = process.env.KFAI_BASE_URL || 'http://localhost:3000';
+
+  // Build request body
+  const body: Record<string, unknown> = { prompt, image: img };
+  if (model) body.model = model;
+
+  try {
+    // Call /api/vision with internal auth — we need to pass the user's token.
+    // Since this is called from /api/chat which has the user's bearer token,
+    // we can't easily forward it here. Instead, we call the vision logic
+    // directly via fetch with the user's auth context.
+    //
+    // Simpler: call krouter vision directly here (skip /api/vision endpoint).
+    const { callKrouterStream } = await import('./krouter') as any;
+    const VISION_MODELS = [
+      'opencode/big-pickle',
+      'opencode/gpt-5.4', 'opencode/gpt-5.4-mini',
+      'opencode/claude-sonnet-4', 'opencode/claude-haiku-4-5',
+      'opencode/gemini-3.5-flash', 'opencode/gemini-3.6-flash',
+    ];
+    const chosenModel = (model && VISION_MODELS.includes(model)) ? model : 'opencode/big-pickle';
+
+    // Load image data if filename
+    let imageDataUrl = img;
+    if (!img.startsWith('data:image/') && !img.startsWith('http')) {
+      // It's a sandbox filename
+      const loaded = await fileLoad(ctx.userId, img.replace(/^\/+/, ''));
+      if (!loaded.found) {
+        return { status: 'error', error: `Image not found in sandbox: ${img}` };
+      }
+      const ext = img.toLowerCase().split('.').pop() || '';
+      const mimeMap: Record<string, string> = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+      };
+      const mime = mimeMap[ext] || 'image/png';
+      imageDataUrl = `data:${mime};base64,${loaded.content}`;
+    } else if (img.startsWith('http')) {
+      // Fetch the URL
+      const imgRes = await fetch(img, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KFAI/1.0)' },
+      });
+      if (!imgRes.ok) {
+        return { status: 'error', error: `Failed to fetch image: HTTP ${imgRes.status}` };
+      }
+      const ct = imgRes.headers.get('content-type') || '';
+      if (!ct.startsWith('image/')) {
+        return { status: 'error', error: `URL did not return an image (got ${ct})` };
+      }
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      if (buf.length > 5 * 1024 * 1024) {
+        return { status: 'error', error: 'Image too large (max 5MB)' };
+      }
+      imageDataUrl = `data:${ct};base64,${buf.toString('base64')}`;
+    }
+
+    const messages: any[] = [
+      {
+        role: 'system',
+        content: 'You are KFAI vision assistant. Analyze the image and answer concisely in the user\'s language (default: Indonesian).',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: imageDataUrl } },
+        ],
+      },
+    ];
+
+    const result = await callKrouterStream(
+      messages,
+      chosenModel,
+      () => {},
+      AbortSignal.timeout(45000) as any,
+    );
+
+    if (result.error || result.http !== 200) {
+      return {
+        status: 'error',
+        error: result.error || `krouter HTTP ${result.http}`,
+        model: chosenModel,
+      };
+    }
+
+    return {
+      status: 'done',
+      description: result.content || '(no description generated)',
+      model: chosenModel,
+      prompt,
+    };
+  } catch (e: any) {
+    return { status: 'error', error: e?.message || 'Vision analysis failed' };
   }
 }

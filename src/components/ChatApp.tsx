@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   listConversations, getConversation, createConversation, deleteConversation,
-  postChat, logout, type Conversation, type AuthMe,
+  postChat, uploadImage, logout, type Conversation, type AuthMe,
 } from "@/lib/api-client";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -117,6 +117,9 @@ export function ChatApp({ me, onLogout }: Props) {
   // Chat state
   const [history, setHistory] = useState<HistoryMsg[]>([]);
   const [input, setInput] = useState("");
+  const [pendingImages, setPendingImages] = useState<Array<{ filename: string; preview: string; name: string }>>([]);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [streaming, setStreaming] = useState(false);
   const [statusText, setStatusText] = useState("ready");
   const [statusOnline, setStatusOnline] = useState(true);
@@ -466,11 +469,44 @@ export function ChatApp({ me, onLogout }: Props) {
     return finalText;
   }, [handleSSE, currentConvId, refreshConversations]);
 
+  // ── Image upload ──────────────────────────────────────────────────────────────
+  const handleImageUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploadingImage(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith('image/')) continue;
+        if (file.size > 5 * 1024 * 1024) {
+          alert(`File ${file.name} terlalu besar (max 5MB)`);
+          continue;
+        }
+        try {
+          const result = await uploadImage(file);
+          setPendingImages((prev) => [...prev, {
+            filename: result.filename,
+            preview: result.dataUrl,
+            name: result.originalName,
+          }]);
+        } catch (e: any) {
+          alert(`Gagal upload ${file.name}: ${e?.message || 'unknown error'}`);
+        }
+      }
+    } finally {
+      setUploadingImage(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, []);
+
+  const removePendingImage = useCallback((filename: string) => {
+    setPendingImages((prev) => prev.filter((img) => img.filename !== filename));
+  }, []);
+
   // ── Send ─────────────────────────────────────────────────────────────────────
   const sendLockRef = useRef(false);
   const send = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if (!text || streaming || sendLockRef.current) return;
+    const images = pendingImages.length > 0 ? pendingImages.map((i) => i.filename) : [];
+    if ((!text && images.length === 0) || streaming || sendLockRef.current) return;
     sendLockRef.current = true;
 
     setInput("");
@@ -487,7 +523,9 @@ export function ChatApp({ me, onLogout }: Props) {
     abortRef.current = new AbortController();
 
     try {
-      const res = await postChat(text, currentConvId);
+      const res = await postChat(text || "(analyze the attached image)", currentConvId, images.length > 0 ? images : undefined);
+      // Clear pending images after send
+      setPendingImages([]);
       if (res.status === 401) {
         appendError("Session expired. Please login again.");
         onLogout();
@@ -515,7 +553,7 @@ export function ChatApp({ me, onLogout }: Props) {
       abortRef.current = null;
       sendLockRef.current = false;
     }
-  }, [input, streaming, history, appendUser, appendError, readSSE, currentConvId, refreshConversations, onLogout]);
+  }, [input, streaming, history, pendingImages, appendUser, appendError, readSSE, currentConvId, refreshConversations, onLogout]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────────
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -661,10 +699,46 @@ export function ChatApp({ me, onLogout }: Props) {
           </div>
 
           <footer className="kfai-footer">
+            {pendingImages.length > 0 && (
+              <div className="kfai-image-previews">
+                {pendingImages.map((img) => (
+                  <div key={img.filename} className="kfai-image-preview">
+                    <img src={img.preview} alt={img.name} />
+                    <button
+                      className="kfai-image-remove"
+                      onClick={() => removePendingImage(img.filename)}
+                      aria-label="Remove image"
+                      title="Hapus gambar"
+                    >
+                      ✕
+                    </button>
+                    <span className="kfai-image-name">{img.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="kfai-input-bar">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                multiple
+                style={{ display: 'none' }}
+                onChange={(e) => handleImageUpload(e.target.files)}
+                aria-label="Upload image"
+              />
+              <button
+                className="kfai-upload-btn"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingImage || streaming}
+                title="Upload gambar untuk dianalisis AI"
+                aria-label="Upload image"
+              >
+                {uploadingImage ? '⏳' : '📎'}
+              </button>
               <textarea
                 className="kfai-prompt"
-                placeholder="Tanya apa saja. KFAI pakai plan + tools, lalu jawab."
+                placeholder={pendingImages.length > 0 ? "Tanya tentang gambar ini..." : "Tanya apa saja. KFAI pakai plan + tools, lalu jawab."}
                 rows={1}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -675,12 +749,13 @@ export function ChatApp({ me, onLogout }: Props) {
                 className={`kfai-send ${streaming ? "kfai-stop" : ""}`}
                 onClick={() => (streaming ? abortRef.current?.abort() : send())}
                 title={streaming ? "Stop" : "Send"}
+                disabled={!streaming && !input.trim() && pendingImages.length === 0}
               >
                 {streaming ? "stop" : "send"}
               </button>
             </div>
             <div className="kfai-hint">
-              <kbd>enter</kbd> send · <kbd>shift+enter</kbd> newline · <kbd>esc</kbd> stop
+              <kbd>enter</kbd> send · <kbd>shift+enter</kbd> newline · <kbd>esc</kbd> stop · <kbd>📎</kbd> upload image
             </div>
           </footer>
         </div>

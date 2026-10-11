@@ -71,7 +71,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   const userText: string = typeof body.message === 'string' ? body.message : '';
   let conversationId: string | null = typeof body.conversationId === 'string' ? body.conversationId : null;
 
-  if (!userText.trim()) {
+  // Image attachments (filenames from /api/upload — stored in user sandbox)
+  const imageAttachments: string[] = Array.isArray(body.imageAttachments)
+    ? body.imageAttachments.filter((s: unknown) => typeof s === 'string' && s.length < 256).slice(0, 4)
+    : [];
+
+  if (!userText.trim() && imageAttachments.length === 0) {
     return Response.json({ error: 'Empty message' }, { status: 400 });
   }
   if (userText.length > 20000) {
@@ -123,15 +128,21 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // Append the current user message (and persist it)
+  // If user attached images, prepend a note so the AI knows to call vision_analyze
+  let userMessageContent = userText;
+  if (imageAttachments.length > 0) {
+    const imageList = imageAttachments.map((f) => `- ${f}`).join('\n');
+    userMessageContent = `${userText}${userText ? '\n\n' : ''}[Image attached — call vision_analyze to see it:]\n${imageList}`;
+  }
   const userMsg = await db.message.create({
     data: {
       conversationId: conversation.id,
       userId: auth.userId,
       role: 'user',
-      content: userText,
+      content: userMessageContent,
     },
   });
-  clean.push({ role: 'user', content: userText });
+  clean.push({ role: 'user', content: userMessageContent });
 
   // Always use the default model — the client does not get to choose.
   const model = DEFAULT_MODEL;

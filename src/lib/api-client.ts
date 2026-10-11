@@ -363,10 +363,45 @@ export async function deleteConversation(id: string): Promise<void> {
 }
 
 // ── Chat (returns a streaming Response) ────────────────────────────────────────
-export async function postChat(message: string, conversationId?: string | null): Promise<Response> {
+// Supports optional image attachments (filenames from /api/upload).
+export async function postChat(
+  message: string,
+  conversationId?: string | null,
+  imageAttachments?: string[],
+): Promise<Response> {
+  const body: Record<string, unknown> = { message, conversationId: conversationId || null };
+  if (imageAttachments && imageAttachments.length > 0) {
+    body.imageAttachments = imageAttachments;
+  }
   return fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
-    body: JSON.stringify({ message, conversationId: conversationId || null }),
+    body: JSON.stringify(body),
   });
+}
+
+// ── Image upload ──────────────────────────────────────────────────────────────
+export type UploadedImage = {
+  ok: boolean;
+  filename: string;          // sandbox path (e.g. "uploads/abc.png")
+  originalName: string;
+  mimeType: string;
+  size: number;
+  width?: number;
+  height?: number;
+  dataUrl: string;           // base64 data URL (for preview)
+  downloadUrl: string;
+};
+
+export async function uploadImage(file: File): Promise<UploadedImage> {
+  const formData = new FormData();
+  formData.append('image', file);
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    headers: await authHeaders(),
+    body: formData,
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `Upload failed (${res.status})`);
+  return j as UploadedImage;
 }

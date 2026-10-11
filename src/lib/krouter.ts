@@ -230,7 +230,47 @@ Rules:
 3. Use notes_save for a single large scratchpad. Use file_save for multiple structured files.
 4. The persistent sandbox is YOUR working memory. Save intermediate work there so you can pick up where you left off in the next conversation.
 5. When a new conversation starts, you MAY call env_list + notes_load + file_list to recall context. Do not assume the user is brand new — they may be a returning user with prior files.
-6. NEVER store secrets (passwords, API keys, tokens) in the sandbox — it's per-user isolated but still server-side storage. Use env_set with a warning if the user insists.`;
+6. NEVER store secrets (passwords, API keys, tokens) in the sandbox — it's per-user isolated but still server-side storage. Use env_set with a warning if the user insists.
+
+# SECURE FILE DOWNLOAD (for files the user can't access directly via web UI)
+
+When you generate a file (report, script, data export, etc.) in the user's sandbox, the user CANNOT access it directly via web UI — the sandbox is server-side only. To let the user download a file, use:
+
+- file_download_link(filename, ttlSec?) — returns a signed URL like "/api/files/report.md?token=xxx" that the user can click in their browser. The URL expires after ttlSec (default 300s = 5min, max 3600s = 1hr). Even if shared, it's tied to this user.
+
+After generating a file, ALWAYS offer a download link via file_download_link. Example workflow:
+1. file_save("report.md", content) — save the file
+2. file_download_link("report.md") — generate download URL
+3. Tell the user: "File sudah dibuat. Klik link ini untuk download: <url>"
+
+The URL is relative — display it as-is (e.g. "/api/files/report.md?token=abc123"). The chat UI will render it as a clickable link.
+
+# VISION (image input + analysis)
+
+You can analyze images using the vision_analyze tool. The user can upload images in the chat UI — when they do, the image is saved to their sandbox as "uploads/<id>.<ext>" and you'll see the filename in the user's message.
+
+To analyze an uploaded image:
+- vision_analyze(image="uploads/abc.png", prompt="What's in this image?")
+- Or use a data URL, or an HTTP URL
+
+Use cases:
+- OCR: extract text from screenshots, documents, receipts
+- Describe scenes, identify objects, people, locations
+- Analyze charts, diagrams, tables
+- Read code from screenshots
+- Translate text in images
+
+If the user uploads an image and asks about it, call vision_analyze with the filename. Don't try to read the image yourself — you can't see it without the tool.
+
+# WHEN TO STOP
+
+Call task_complete() when:
+- The user's question is fully answered
+- All requested files are generated AND download links are provided
+- All images are analyzed and results are shared
+- No further action is needed from the user's side
+
+Until task_complete() is called, the loop keeps going. If you generated a file but haven't offered a download link, do that BEFORE calling task_complete().`;
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 export const TOOLS: ToolDef[] = [
@@ -1149,6 +1189,40 @@ export const TOOLS: ToolDef[] = [
           filename: { type: 'string', description: 'Filename (relative to sandbox root).' },
         },
         required: ['filename'],
+      },
+    },
+  },
+  // ── Secure file download link ──
+  {
+    type: 'function',
+    function: {
+      name: 'file_download_link',
+      description: 'Generate a secure download URL for a file in the CURRENT user\'s sandbox. The URL is signed and expires after ttlSec (default 300s, max 3600s). Share the returned URL with the user so they can click it to download the file in their browser. The URL is tied to this user — even if shared, it expires quickly. Use this after generating files like reports, scripts, data exports, etc. so the user can download them.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string', description: 'Filename in sandbox (must exist).' },
+          ttlSec: { type: 'number', description: 'Link validity in seconds (60-3600, default 300).' },
+        },
+        required: ['filename'],
+      },
+    },
+  },
+  // ── Vision: analyze image ──
+  {
+    type: 'function',
+    function: {
+      name: 'vision_analyze',
+      description: 'Analyze an image using a vision-capable AI model. Returns a text description based on your prompt. Supports: (1) sandbox filename like "uploads/abc.png" (loaded from user\'s sandbox), (2) data URL "data:image/...;base64,...", (3) HTTP URL "https://example.com/image.jpg". Use this to read text in images (OCR), describe scenes, identify objects, analyze charts/diagrams, extract data from screenshots, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          image: { type: 'string', description: 'Image source: sandbox filename (e.g. "uploads/photo.png"), data URL, or HTTP URL.' },
+          imageUrl: { type: 'string', description: 'Alternative: HTTP URL of image (if "image" is not provided).' },
+          prompt: { type: 'string', description: 'What to analyze about the image. Default: "Describe this image." Example: "Extract all text from this screenshot." or "What objects are in this image?"' },
+          model: { type: 'string', description: 'Vision model to use. Default: opencode/big-pickle. Options: opencode/big-pickle, opencode/gpt-5.4, opencode/gpt-5.4-mini, opencode/claude-sonnet-4, opencode/claude-haiku-4-5, opencode/gemini-3.5-flash, opencode/gemini-3.6-flash.' },
+        },
+        required: ['image'],
       },
     },
   },
