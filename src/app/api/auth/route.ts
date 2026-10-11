@@ -33,16 +33,20 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Bad Gateway', { status: 502 });
   }
 
-  // Rate limit
-  const rl = await checkRateLimit(ip, 'login_attempt');
-  if (!rl.ok) {
-    return NextResponse.json(
-      { error: 'Too many login attempts. Try again later.' },
-      {
-        status: 429,
-        headers: { 'Retry-After': String(rl.retryAfterSec) },
-      },
-    );
+  // Rate limit — fail-open if DB unavailable (other layers still protect)
+  try {
+    const rl = await checkRateLimit(ip, 'login_attempt');
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: 'Too many login attempts. Try again later.' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rl.retryAfterSec) },
+        },
+      );
+    }
+  } catch (e: any) {
+    console.error('[auth] rate-limit check failed:', e?.message);
   }
 
   // Parse body

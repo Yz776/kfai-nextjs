@@ -33,17 +33,21 @@ export async function POST(req: NextRequest): Promise<Response> {
     return new Response('Bad Gateway', { status: 502 });
   }
 
-  // ── Rate limit chat per IP ────────────────────────────────────────────────
+  // ── Rate limit chat per IP — fail-open if DB unavailable ────────────────
   const ip = extractIp(req.headers);
-  const rl = await checkRateLimit(ip, 'chat');
-  if (!rl.ok) {
-    return Response.json(
-      { error: 'Too many chat requests. Try again later.' },
-      {
-        status: 429,
-        headers: { 'Retry-After': String(rl.retryAfterSec) },
-      },
-    );
+  try {
+    const rl = await checkRateLimit(ip, 'chat');
+    if (!rl.ok) {
+      return Response.json(
+        { error: 'Too many chat requests. Try again later.' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rl.retryAfterSec) },
+        },
+      );
+    }
+  } catch (e: any) {
+    console.error('[chat] rate-limit check failed:', e?.message);
   }
 
   // ── Auth gate: verify token + IP + device fingerprint ────────────────────
