@@ -1,7 +1,7 @@
 // KFAI — Per-user sandboxed filesystem environment (PERSISTENT)
 //
 // Each user gets their own working directory under:
-//   /home/z/my-project/user-data/<userId>/
+//   /var/lib/kfai/sandbox/<userId>/
 //
 // This directory is PERSISTENT across server restarts — files saved by the
 // AI (programs, scripts, configs, generated content) survive forever until
@@ -22,7 +22,7 @@ import { join, resolve, relative, isAbsolute, dirname } from 'path';
 import { db } from './db';
 
 // Persistent location — survives server restarts
-const SANDBOX_ROOT = '/home/z/my-project/user-data';
+const SANDBOX_ROOT = '/var/lib/kfai/sandbox';
 
 // Per-file size cap (1 MB) — prevents abuse
 const MAX_FILE_SIZE = 1024 * 1024;

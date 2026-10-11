@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
     let totalStorageBytes = 0;
     let userDirCount = 0;
     try {
-      const sandboxRoot = '/home/z/my-project/user-data';
+      const sandboxRoot = '/var/lib/kfai/sandbox';
       const dirs = readdirSync(sandboxRoot);
       userDirCount = dirs.length;
       for (const dir of dirs) {
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
         auditLogEntries: auditLogCount,
       },
       storage: {
-        sandboxRoot: '/home/z/my-project/user-data',
+        sandboxRoot: '/var/lib/kfai/sandbox',
         userDirectories: userDirCount,
         totalBytes: totalStorageBytes,
         totalMB: Math.round(totalStorageBytes / 1024 / 1024 * 100) / 100,

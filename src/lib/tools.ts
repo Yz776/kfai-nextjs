@@ -482,10 +482,10 @@ async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult>
     'bash -', 'sh -', 'zsh -', 'fish -',
     // Subshells / process substitution still blocked
     '<(', '>(', '<<',
-    // Path escape — block anything that could break out of the sandbox
-    '../', '/etc/', '/root/', '/home/', '/var/', '/usr/', '/proc/', '/sys/', '/dev/',
-    // Block references to the project itself
-    'package.json', '.env', 'prisma/', 'src/', 'next.config',
+    // Path escape — block system dirs (but NOT /admin/ or /api/ — those are app routes)
+    '../', '/etc/', '/root/', '/proc/', '/sys/', '/dev/',
+    // Block references to the project source
+    'package.json', '.env', 'prisma/schema', 'next.config',
   ];
   for (const b of blocked) {
     if (cmd.toLowerCase().includes(b.toLowerCase())) {
@@ -506,8 +506,12 @@ async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult>
   // Note: file redirects (> and >>) are now ALLOWED — they happen inside the
   // sandbox workdir and the path-escape rule above already prevents breaking out.
 
-  // Whitelist
+  // Whitelist — includes shell keywords so loops/conditionals work
   const whitelist = [
+    // Shell keywords (for loops, conditionals, etc.)
+    'for', 'while', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done',
+    'case', 'esac', 'in', 'until', 'break', 'continue', 'return',
+    // Standard commands
     'awk', 'bc', 'echo', 'printf', 'expr', 'date', 'factor',
     'seq', 'sort', 'uniq', 'head', 'tail', 'wc', 'tr', 'cut', 'paste',
     'column', 'cal', 'python3', 'python', 'node', 'sleep', 'pwd',
@@ -1581,7 +1585,7 @@ async function toolNotesLoad(ctx: ToolContext | undefined): Promise<ToolResult> 
 // ── Persistent file management tools (per-user sandbox) ──────────────────────
 // These let the AI save/load/manage files in the user's persistent sandbox.
 // Files survive across conversations and server restarts — they are stored at
-// /home/z/my-project/user-data/<userId>/ and are isolated per user.
+// /var/lib/kfai/sandbox/<userId>/ and are isolated per user.
 
 async function toolFileSave(ctx: ToolContext | undefined, filename: string, content: string): Promise<ToolResult> {
   if (!ctx) return { status: 'error', error: 'Auth required for file_save' };

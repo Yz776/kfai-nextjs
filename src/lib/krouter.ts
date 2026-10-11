@@ -203,7 +203,7 @@ You operate inside a per-user environment. Each user has:
 
 # PERSISTENT FILE SANDBOX
 
-The user has a persistent sandbox at /home/z/my-project/user-data/<userId>/ (server-side, isolated per user). You can save programs, scripts, configs, generated content, etc. The sandbox survives forever until the user explicitly deletes files.
+The user has a persistent sandbox at /var/lib/kfai/sandbox/<userId>/ (server-side, isolated per user). You can save programs, scripts, configs, generated content, etc. The sandbox survives forever until the user explicitly deletes files.
 
 Tools to manage persistent files:
 - file_save(filename, content) — write a text file (max 1MB per file, 50MB total per user). Subdirectories allowed (e.g. "src/main.py").
