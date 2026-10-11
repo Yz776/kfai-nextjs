@@ -370,7 +370,7 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
       const codecResults: string[] = [];
       for (const codec of codecs) {
         try {
-          const decoded = await navigator.mediaCapabilities.decodingInfo({ type: 'file', video: { contentType: codec.startsWith('video') ? codec : '', width: 1920, height: 1080, bitrate: 5000000, framerate: 30 }, audio: { contentType: codec.startsWith('audio') ? codec : '', channels: 2, bitrate: 128000, sampleRate: 44100 } });
+          const decoded = await (navigator as any).mediaCapabilities.decodingInfo({ type: 'file', video: { contentType: codec.startsWith('video') ? codec : '', width: 1920, height: 1080, bitrate: 5000000, framerate: 30 }, audio: { contentType: codec.startsWith('audio') ? codec : '', channels: 2, bitrate: 128000, sampleRate: 44100 } });
           codecResults.push(codec.split(';')[0] + (decoded.supported ? '+s' : '-s'));
         } catch {}
       }

@@ -28,8 +28,8 @@ export type RateLimitResult =
   | { ok: false; reason: 'rate_limited'; remaining: 0; resetAt: Date; retryAfterSec: number };
 
 export async function checkRateLimit(ip: string, action: keyof typeof LIMITS | string): Promise<RateLimitResult> {
-  const spec = LIMITS[action];
-  if (!spec) return { ok: true, remaining: Infinity, resetAt: new Date(Date.now() + spec?.windowMs || 0) };
+  const spec = LIMITS[action] as LimitSpec | undefined;
+  if (!spec) return { ok: true, remaining: Infinity, resetAt: new Date(Date.now() + 60 * 60 * 1000) };
 
   const now = new Date();
   const windowStart = new Date(now.getTime() - spec.windowMs);
