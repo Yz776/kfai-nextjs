@@ -20,9 +20,14 @@ export function LoginScreen({ onLoggedIn }: Props) {
   const runAutoLogin = useCallback(async () => {
     setError(null);
 
-    // Stage 1-7 with minimal UX delay
+    // Collect fingerprint in background while showing progress
+    // Start collection immediately (non-blocking)
+    setStage("Memindai canvas + GPU");
+    setProgress(10);
+    const fpPromise = collectDeviceFingerprint();
+
+    // Animate progress while fingerprint collects
     const stages: [string, number][] = [
-      ["Memindai canvas + GPU", 10],
       ["Menganalisis WebGL + shader", 25],
       ["Memeriksa audio + codec", 40],
       ["Mendeteksi font + media", 55],
@@ -30,15 +35,16 @@ export function LoginScreen({ onLoggedIn }: Props) {
       ["Mengukur presisi CPU", 82],
       ["Memverifikasi jaringan + perilaku", 92],
     ];
+    // Animate through stages while waiting for fingerprint
     for (const [label, pct] of stages) {
       setStage(label);
       setProgress(pct);
-      await new Promise((r) => setTimeout(r, 60));
+      await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Actually collect fingerprint
+    // Wait for fingerprint to complete
     try {
-      await collectDeviceFingerprint();
+      await fpPromise;
       setProgress(100);
       setStage("Perangkat terverifikasi");
 
