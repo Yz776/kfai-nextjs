@@ -19,21 +19,57 @@
 // headless browsers leave a different fingerprint than real users.
 
 const TOKEN_KEY = 'kfai_token';
+const COOKIE_NAME = 'kfai_session';
 
-// ── Token helpers ────────────────────────────────────────────────────────────
+// ── Cookie helpers ──────────────────────────────────────────────────────────
+// Cookies survive across tabs and browser restarts (unlike localStorage which
+// can be cleared). We store the session token in BOTH localStorage and a cookie
+// so that opening a new tab or clearing localStorage doesn't generate a new
+// user identity.
+function setCookie(name: string, value: string, days: number): void {
+  if (typeof document === 'undefined') return;
+  const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toUTCString();
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax${secure}`;
+}
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function deleteCookie(name: string): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax`;
+}
+
+// ── Token helpers (localStorage + cookie dual storage) ──────────────────────
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(TOKEN_KEY);
+  // Try localStorage first, then fall back to cookie
+  const local = window.localStorage.getItem(TOKEN_KEY);
+  if (local) return local;
+  const cookie = getCookie(COOKIE_NAME);
+  if (cookie) {
+    // Restore to localStorage from cookie
+    window.localStorage.setItem(TOKEN_KEY, cookie);
+    return cookie;
+  }
+  return null;
 }
 
 export function setToken(token: string): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(TOKEN_KEY, token);
+  // Also store in cookie (30 days) for cross-tab persistence
+  setCookie(COOKIE_NAME, token, 30);
 }
 
 export function clearToken(): void {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(TOKEN_KEY);
+  deleteCookie(COOKIE_NAME);
 }
 
 // ── Device fingerprint collector ────────────────────────────────────────────
@@ -524,35 +560,38 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     document.body.removeChild(div);
   } catch {}
 
-  // ── Layer 28: WebRTC ICE candidate gathering (local network fingerprint) ────
+  // ── Layer 28: WebRTC ICE candidate gathering (non-blocking, 500ms max) ──────
   // We DON'T store the actual IP — we store only a HASH of the candidate
   // summary (network type + protocol). This still fingerprints the local
   // network setup without exposing the user's IP address.
+  // Uses Promise.race with timeout so it never blocks the UI for long.
   try {
-    const rtc = new RTCPeerConnection({ iceServers: [] });
-    rtc.createDataChannel('');
-    const candidates: string[] = [];
-    const candidatePromise = new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 800); // 800ms timeout
-      rtc.onicecandidate = (e) => {
-        if (e.candidate === null) { clearTimeout(timer); resolve(); }
-        else if (e.candidate) {
-          // Extract only type + protocol + component, NOT the address
-          const c = e.candidate.candidate.split(' ');
-          if (c.length >= 7) candidates.push(`${c[7] || ''}:${c[2] || ''}:${c[5] || ''}`);
+    raw.iceSig = await Promise.race([
+      (async () => {
+        const rtc = new RTCPeerConnection({ iceServers: [] });
+        rtc.createDataChannel('');
+        const candidates: string[] = [];
+        const done = new Promise<void>((resolve) => {
+          const timer = setTimeout(() => { resolve(); }, 400);
+          rtc.onicecandidate = (e) => {
+            if (e.candidate === null) { clearTimeout(timer); resolve(); }
+            else if (e.candidate) {
+              const c = e.candidate.candidate.split(' ');
+              if (c.length >= 7) candidates.push(`${c[7] || ''}:${c[2] || ''}:${c[5] || ''}`);
+            }
+          };
+        });
+        await rtc.createOffer().then((o) => rtc.setLocalDescription(o));
+        await done;
+        rtc.close();
+        if (candidates.length > 0) {
+          return (await sha256Hex(candidates.sort().join(','))).slice(0, 32);
         }
-      };
-    });
-    await rtc.createOffer().then((o) => rtc.setLocalDescription(o));
-    await candidatePromise;
-    rtc.close();
-    // Hash the candidate signatures
-    if (candidates.length > 0) {
-      raw.iceSig = (await sha256Hex(candidates.sort().join(','))).slice(0, 32);
-    } else {
-      raw.iceSig = 'none';
-    }
-  } catch {}
+        return 'none';
+      })(),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+  } catch { raw.iceSig = 'err'; }
 
   // ── Layer 29: Custom protocol handlers (registered apps) ─────────────────────
   try {
