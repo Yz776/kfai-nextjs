@@ -318,14 +318,281 @@ export async function collectDeviceFingerprint(): Promise<{ hash: string; raw: R
     }
   } catch {}
 
-  // ── Layer 18: Behavioral biometrics (mouse movement entropy) ───────────────
-  // We collect this only on the login screen — not in fingerprint itself.
-  // See collectBehavioralBiometrics() below.
+  // ── Layer 18: WebGL extensions + shader precision (very unique per GPU) ────
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
+    if (gl) {
+      const exts = gl.getSupportedExtensions() || [];
+      raw.glExtCount = String(exts.length);
+      // Hash the extension list (don't store full list — too long, but the
+      // count + sorted hash is enough for fingerprinting)
+      raw.glExtsHash = (await sha256Hex(exts.sort().join(','))).slice(0, 32);
+      // Shader precision format — varies per GPU/driver
+      const sp = (precision: number, shaderType: number) => {
+        try {
+          const fmt = gl.getShaderPrecisionFormat(shaderType, precision);
+          return fmt ? `${fmt.rangeMin}-${fmt.rangeMax}-${fmt.precision}` : 'null';
+        } catch { return 'err'; }
+      };
+      const VS = gl.VERTEX_SHADER;
+      const FS = gl.FRAGMENT_SHADER;
+      raw.glSpVsFloat = sp(gl.HIGH_FLOAT, VS) + ',' + sp(gl.MEDIUM_FLOAT, VS) + ',' + sp(gl.LOW_FLOAT, VS);
+      raw.glSpFsFloat = sp(gl.HIGH_FLOAT, FS) + ',' + sp(gl.MEDIUM_FLOAT, FS) + ',' + sp(gl.LOW_FLOAT, FS);
+      raw.glSpVsInt = sp(gl.HIGH_INT, VS) + ',' + sp(gl.MEDIUM_INT, VS) + ',' + sp(gl.LOW_INT, VS);
+      raw.glSpFsInt = sp(gl.HIGH_INT, FS) + ',' + sp(gl.MEDIUM_INT, FS) + ',' + sp(gl.LOW_INT, FS);
+      // VENDOR + VERSION strings (e.g. "WebKit WebGL" + "WebGL 1.0")
+      raw.glVersionStr = String(gl.getParameter(gl.VERSION) || '').slice(0, 100);
+      raw.glShadingLang = String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION) || '').slice(0, 100);
+      // UNMASKED vendor/renderer (already collected in glVendor/glRenderer, but also get vendorWebGL)
+      raw.glVendorParam = String(gl.getParameter(gl.VENDOR) || '').slice(0, 50);
+    }
+  } catch { raw.glExts = 'err'; }
+
+  // ── Layer 19: Media capabilities + codec support ──────────────────────────────
+  try {
+    if (navigator.mediaCapabilities) {
+      // Test common codecs — which is supported varies per device/browser
+      const codecs = [
+        'video/mp4; codecs="avc1.42E01E"',
+        'video/mp4; codecs="hev1.1.6.L93.B0"',
+        'video/mp4; codecs="hvc1.1.6.L93.B0"',
+        'video/webm; codecs="vp9"',
+        'video/webm; codecs="vp8"',
+        'video/webm; codecs="av01.0.04M.08"',
+        'audio/mp4; codecs="mp4a.40.2"',
+        'audio/mp4; codecs="mp4a.40.5"',
+        'audio/webm; codecs="opus"',
+        'audio/webm; codecs="vorbis"',
+        'audio/wav; codecs="1"',
+        'audio/mpeg; codecs="mp3"',
+      ];
+      const codecResults: string[] = [];
+      for (const codec of codecs) {
+        try {
+          const decoded = await navigator.mediaCapabilities.decodingInfo({ type: 'file', video: { contentType: codec.startsWith('video') ? codec : '', width: 1920, height: 1080, bitrate: 5000000, framerate: 30 }, audio: { contentType: codec.startsWith('audio') ? codec : '', channels: 2, bitrate: 128000, sampleRate: 44100 } });
+          codecResults.push(codec.split(';')[0] + (decoded.supported ? '+s' : '-s'));
+        } catch {}
+      }
+      raw.codecs = codecResults.join(',');
+    }
+  } catch {}
+  // Audio codec support via canPlayType
+  try {
+    const audio = document.createElement('audio');
+    if (audio.canPlayType) {
+      raw.audioMp3 = audio.canPlayType('audio/mpeg') || 'no';
+      raw.audioOgg = audio.canPlayType('audio/ogg; codecs="vorbis"') || 'no';
+      raw.audioOpus = audio.canPlayType('audio/ogg; codecs="opus"') || 'no';
+      raw.audioAac = audio.canPlayType('audio/mp4; codecs="mp4a.40.5"') || 'no';
+      raw.audioFlac = audio.canPlayType('audio/flac') || 'no';
+      raw.audioWav = audio.canPlayType('audio/wav; codecs="1"') || 'no';
+    }
+  } catch {}
+  // Video codec support via canPlayType
+  try {
+    const video = document.createElement('video');
+    if (video.canPlayType) {
+      raw.videoH264 = video.canPlayType('video/mp4; codecs="avc1.42E01E"') || 'no';
+      raw.videoH265 = video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') || 'no';
+      raw.videoVp9 = video.canPlayType('video/webm; codecs="vp9"') || 'no';
+      raw.videoVp8 = video.canPlayType('video/webm; codecs="vp8"') || 'no';
+      raw.videoAv1 = video.canPlayType('video/mp4; codecs="av01.0.04M.08"') || 'no';
+      raw.videoWebm = video.canPlayType('video/webm') || 'no';
+    }
+  } catch {}
+
+  // ── Layer 20: CSS feature detection (which CSS features supported) ───────────
+  try {
+    const features = ['backdrop-filter', 'aspect-ratio', 'container-type', 'inset', 'gap', 'row-gap', 'column-gap', 'object-fit', 'pointer-events', 'user-select', 'mask-image', 'clip-path', 'will-change', 'filter', 'mix-blend-mode', 'backdrop-filter', 'text-decoration-skip-ink', 'font-variation-settings'];
+    const supported: string[] = [];
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    for (const feat of features) {
+      div.style.cssText = `${feat}: 1px;`;
+      supported.push(feat + ':' + (div.style[feat as any] !== '' ? 'y' : 'n'));
+    }
+    document.body.removeChild(div);
+    raw.cssFeatures = supported.slice(0, 8).join(',');
+  } catch {}
+
+  // ── Layer 21: Media queries (color-gamut, dynamic-range, hover, pointer) ────
+  try {
+    const mqChecks: Record<string, string> = {
+      'color-gamut: srgb': 'cg-srgb',
+      'color-gamut: p3': 'cg-p3',
+      'color-gamut: rec2020': 'cg-rec2020',
+      'dynamic-range: high': 'dr-high',
+      'dynamic-range: standard': 'dr-std',
+      'hover: hover': 'hov-hover',
+      'hover: none': 'hov-none',
+      'pointer: fine': 'ptr-fine',
+      'pointer: coarse': 'ptr-coarse',
+      'pointer: none': 'ptr-none',
+      'prefers-color-scheme: dark': 'cs-dark',
+      'prefers-color-scheme: light': 'cs-light',
+      'prefers-reduced-motion: reduce': 'rm-reduce',
+      'prefers-reduced-motion: no-preference': 'rm-nopref',
+      'forced-colors: active': 'fc-active',
+      'inverted-colors: inverted': 'inv-inverted',
+    };
+    const mqResults: string[] = [];
+    for (const [query, label] of Object.entries(mqChecks)) {
+      const m = matchMedia(`(${query})`);
+      mqResults.push(`${label}:${m.matches ? 'y' : 'n'}`);
+    }
+    raw.mqFeatures = mqResults.join(',');
+  } catch {}
+
+  // ── Layer 22: Gamepad API (controller count — varies per device) ─────────────
+  try {
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const connected = Array.from(gamepads).filter(g => g !== null).length;
+    raw.gamepadsConnected = String(connected);
+  } catch {}
+
+  // ── Layer 23: Sensor availability (Accelerometer, Gyroscope) ────────────────
+  try {
+    const sensors: string[] = [];
+    if ('Accelerometer' in window) sensors.push('accel');
+    if ('Gyroscope' in window) sensors.push('gyro');
+    if ('LinearAccelerationSensor' in window) sensors.push('linaccel');
+    if ('GravitySensor' in window) sensors.push('gravity');
+    if ('AbsoluteOrientationSensor' in window) sensors.push('absorient');
+    if ('RelativeOrientationSensor' in window) sensors.push('relorient');
+    if ('AmbientLightSensor' in window) sensors.push('ambient');
+    raw.sensors = sensors.join(',') || 'none';
+  } catch {}
+
+  // ── Layer 24: Vibration + wake lock + clipboard API availability ────────────
+  try {
+    raw.vibration = String('vibrate' in navigator);
+    raw.wakeLock = String('WakeLock' in window || 'wakeLock' in navigator);
+    raw.clipboard = String(!!navigator.clipboard);
+    raw.share = String(!!navigator.share);
+    raw.credentials = String(!!navigator.credentials);
+    raw.serviceWorker = String('serviceWorker' in navigator);
+    raw.pushManager = String('PushManager' in window);
+    raw.bluetooth = String(!!navigator.bluetooth);
+    raw.usb = String(!!navigator.usb);
+    raw.serial = String(!!navigator.serial);
+    raw.hid = String(!!navigator.hid);
+    raw.gpu = String(!!navigator.gpu); // WebGPU
+    raw.ads = String('Ads' in window); // nothing yet
+    raw.webShare = String('share' in navigator);
+  } catch {}
+
+  // ── Layer 25: Performance timing (sub-millisecond CPU fingerprint) ──────────
+  // Already in Layer 15 — but let's add more variations
+  try {
+    // SHA-256 hash of fixed string — timing varies per CPU
+    const start = performance.now();
+    for (let i = 0; i < 50; i++) {
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('kfai-fp-test-' + i));
+    }
+    raw.cryptoTime = String(performance.now() - start);
+    // Worker round-trip timing (if available)
+    if (typeof Worker !== 'undefined') {
+      const workerStart = performance.now();
+      const workerCode = 'self.onmessage = function(e) { let s = 0; for (let i = 0; i < 10000; i++) s += Math.sqrt(i); self.postMessage(s); };';
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+      await new Promise((resolve) => {
+        worker.onmessage = () => { resolve(null); };
+        worker.postMessage('start');
+      });
+      worker.terminate();
+      raw.workerTime = String(performance.now() - workerStart);
+    }
+  } catch {}
+
+  // ── Layer 26: Touch pressure (webkitForce — iOS specific) ────────────────────
+  try {
+    // Check if Touch events have force property
+    const touch = TouchEvent ? new TouchEvent('touchstart') : null;
+    if (touch && 'force' in Touch.prototype) raw.touchForce = 'yes';
+    else raw.touchForce = 'no';
+  } catch { raw.touchForce = 'err'; }
+
+  // ── Layer 27: DOMRect precision (layout engine fingerprint) ──────────────────
+  try {
+    const div = document.createElement('div');
+    div.style.cssText = 'position:absolute;left:10.5px;top:20.7px;width:100.3px;height:50.2px;';
+    document.body.appendChild(div);
+    const rect = div.getBoundingClientRect();
+    raw.domRect = `${rect.left},${rect.top},${rect.width},${rect.height}`;
+    document.body.removeChild(div);
+  } catch {}
+
+  // ── Layer 28: WebRTC ICE candidate gathering (local network fingerprint) ────
+  // We DON'T store the actual IP — we store only a HASH of the candidate
+  // summary (network type + protocol). This still fingerprints the local
+  // network setup without exposing the user's IP address.
+  try {
+    const rtc = new RTCPeerConnection({ iceServers: [] });
+    rtc.createDataChannel('');
+    const candidates: string[] = [];
+    const candidatePromise = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 800); // 800ms timeout
+      rtc.onicecandidate = (e) => {
+        if (e.candidate === null) { clearTimeout(timer); resolve(); }
+        else if (e.candidate) {
+          // Extract only type + protocol + component, NOT the address
+          const c = e.candidate.candidate.split(' ');
+          if (c.length >= 7) candidates.push(`${c[7] || ''}:${c[2] || ''}:${c[5] || ''}`);
+        }
+      };
+    });
+    await rtc.createOffer().then((o) => rtc.setLocalDescription(o));
+    await candidatePromise;
+    rtc.close();
+    // Hash the candidate signatures
+    if (candidates.length > 0) {
+      raw.iceSig = (await sha256Hex(candidates.sort().join(','))).slice(0, 32);
+    } else {
+      raw.iceSig = 'none';
+    }
+  } catch {}
+
+  // ── Layer 29: Custom protocol handlers (registered apps) ─────────────────────
+  try {
+    if (navigator.registerProtocolHandler) {
+      raw.protocolHandler = 'supported';
+    } else {
+      raw.protocolHandler = 'unsupported';
+    }
+  } catch {}
+
+  // ── Layer 30: Color depth + pixel depth (more granular) ──────────────────────
+  raw.colorDepth = String(screen.colorDepth);
+  raw.pixelDepth = String(screen.pixelDepth);
+
+  // ── Layer 31: Animation frame precision ─────────────────────────────────────
+  try {
+    const rafStart = performance.now();
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    raw.rafInterval = String(performance.now() - rafStart);
+  } catch {}
+
+  // ── Layer 32: Image decode timing (varies per GPU/driver) ────────────────────
+  try {
+    const imgStart = performance.now();
+    const img = new Image();
+    await new Promise<void>((resolve) => {
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+      img.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+      setTimeout(resolve, 500);
+    });
+    raw.imgDecode = String(performance.now() - imgStart);
+  } catch {}
 
   // ── Compute hash ─────────────────────────────────────────────────────────────
   // Sort keys for stability, then SHA-256 hash with secret salt.
+  // Bumped to v4 because we added 15+ new signals (WebGL exts, codecs, MQ, etc.)
   const sorted = Object.keys(raw).sort().map((k) => `${k}=${raw[k]}`).join('|');
-  const hash = await sha256Hex('kfai-fp-v3:' + sorted); // bumped version to v3
+  const hash = await sha256Hex('kfai-fp-v4:' + sorted);
   cachedFingerprint = hash;
   cachedRawSignals = raw;
   return { hash, raw };

@@ -20,29 +20,37 @@ export function LoginScreen({ onLoggedIn }: Props) {
 
   // ── Collect device fingerprint in background with progress display ──────────
   const collectFingerprint = useCallback(async () => {
-    setFpStage("Memindai canvas");
-    setFpProgress(15);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Memindai canvas + GPU");
+    setFpProgress(10);
+    await new Promise((r) => setTimeout(r, 150));
 
-    setFpStage("Menganalisis WebGL + GPU");
-    setFpProgress(30);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Menganalisis WebGL extensions + shader precision");
+    setFpProgress(20);
+    await new Promise((r) => setTimeout(r, 150));
 
-    setFpStage("Memeriksa audio device");
-    setFpProgress(45);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Memeriksa audio device + codecs");
+    setFpProgress(32);
+    await new Promise((r) => setTimeout(r, 150));
 
-    setFpStage("Mendeteksi font");
-    setFpProgress(60);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Mendeteksi font + media capabilities");
+    setFpProgress(44);
+    await new Promise((r) => setTimeout(r, 150));
 
-    setFpStage("Mengukur presisi CPU");
-    setFpProgress(75);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Mengukur presisi CPU + crypto timing");
+    setFpProgress(56);
+    await new Promise((r) => setTimeout(r, 150));
 
-    setFpStage("Memverifikasi hardware + battery");
-    setFpProgress(90);
-    await new Promise((r) => setTimeout(r, 200));
+    setFpStage("Memverifikasi hardware + battery + sensors");
+    setFpProgress(68);
+    await new Promise((r) => setTimeout(r, 150));
+
+    setFpStage("Memeriksa CSS + media queries + codecs");
+    setFpProgress(80);
+    await new Promise((r) => setTimeout(r, 150));
+
+    setFpStage("Menganalisis WebRTC + behavioral pattern");
+    setFpProgress(92);
+    await new Promise((r) => setTimeout(r, 150));
 
     // Actually collect fingerprint (this is fast, the delays above are just UX)
     try {
@@ -121,12 +129,18 @@ export function LoginScreen({ onLoggedIn }: Props) {
           <div className="kfai-fp-signals">
             <span>Canvas</span>
             <span>WebGL2</span>
+            <span>GL Ext</span>
             <span>Audio</span>
             <span>Fonts</span>
             <span>Screen</span>
             <span>Battery</span>
             <span>Media</span>
+            <span>Codecs</span>
+            <span>CSS</span>
+            <span>MQ</span>
+            <span>Sensors</span>
             <span>Perf</span>
+            <span>WebRTC</span>
             <span>Behavior</span>
           </div>
         </div>
