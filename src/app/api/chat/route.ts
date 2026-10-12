@@ -135,10 +135,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ── SERVER-SIDE PRE-EXECUTION ────────────────────────────────────────────────
-  // The model (opencode/big-pickle) doesn't properly format tool call arguments.
-  // Instead of relying on the model to call tools, we DETECT intent from the
-  // user's message, EXECUTE the tools directly on the server, and INJECT the
-  // results as a SEPARATE system message. The model just needs to summarize.
+  // The model (opencode/big-pickle) does NOT support tool calling — it only
+  // generates text. So we DETECT intent from the user's message, EXECUTE the
+  // appropriate tools directly on the server, and INJECT the results as a
+  // system message. The model just needs to summarize the answer.
   const toolCtx = { userId: auth.userId, authId: auth.authId };
   const preExecResults: string[] = [];
   const lowerText = userText.toLowerCase();
@@ -160,6 +160,16 @@ export async function POST(req: NextRequest): Promise<Response> {
     preExecResults.push(`weather(${location}): ${JSON.stringify(w)}`);
   }
 
+  // Detect time difference question
+  if (/(selisih|difference|beda|antara|durasi|berapa (jam|hari|menit))/i.test(lowerText)) {
+    // Extract dates from message (ISO 8601 or common formats)
+    const dateMatches = userText.match(/(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?)/g);
+    if (dateMatches && dateMatches.length >= 2) {
+      const td = await executeTool('time_diff', { date_a: dateMatches[0], date_b: dateMatches[1] }, toolCtx);
+      preExecResults.push(`time_diff(${dateMatches[0]}, ${dateMatches[1]}): ${JSON.stringify(td)}`);
+    }
+  }
+
   // Detect currency question
   if (/(kurs|dollar|usd|idr|rupiah|convert|tukar)/i.test(lowerText)) {
     const fromMatch = userText.match(/(\d+)\s*(?:usd|dollar|\$)/i);
@@ -167,6 +177,41 @@ export async function POST(req: NextRequest): Promise<Response> {
       const amount = Number(fromMatch[1]);
       const cc = await executeTool('currency_convert', { amount, from: 'USD', to: 'IDR' }, toolCtx);
       preExecResults.push(`currency_convert ${amount} USD→IDR: ${JSON.stringify(cc)}`);
+    }
+  }
+
+  // Detect math/calculator question
+  if (/(hitung|calculate|berapa.*\*|berapa.*\/|berapa.*\+|berapa.*-|\d+\s*[\+\-\*\/]\s*\d+)/i.test(lowerText)) {
+    const mathMatch = userText.match(/([\d\s\+\-\*\/\(\)\.\^]+)/);
+    if (mathMatch && mathMatch[1].trim().length > 2) {
+      const expr = mathMatch[1].trim();
+      const calc = await executeTool('calculator', { expression: expr }, toolCtx);
+      preExecResults.push(`calculator(${expr}): ${JSON.stringify(calc)}`);
+    }
+  }
+
+  // Detect BMI question
+  if (/(bmi|berat badan ideal|indeks massa)/i.test(lowerText)) {
+    const weightMatch = userText.match(/(\d+)\s*(?:kg|kilo)/i);
+    const heightMatch = userText.match(/(\d+)\s*(?:cm|tinggi)/i);
+    if (weightMatch && heightMatch) {
+      const bmi = await executeTool('bmi_calculator', { weight: Number(weightMatch[1]), height: Number(heightMatch[1]) }, toolCtx);
+      preExecResults.push(`bmi_calculator: ${JSON.stringify(bmi)}`);
+    }
+  }
+
+  // Detect loan/cicilan question
+  if (/(cicilan|loan|kredit|angsuran|cicil)/i.test(lowerText)) {
+    const principalMatch = userText.match(/(?:pinjam|utang|kredit|pokok)\s*:?\s*(\d+)/i);
+    const rateMatch = userText.match(/(?:bunga|rate)\s*:?\s*(\d+(?:\.\d+)?)/i);
+    const yearsMatch = userText.match(/(\d+)\s*(?:tahun|year)/i);
+    if (principalMatch && yearsMatch) {
+      const lc = await executeTool('loan_calculator', {
+        principal: Number(principalMatch[1]),
+        rate: Number(rateMatch?.[1] || 10),
+        years: Number(yearsMatch[1]),
+      }, toolCtx);
+      preExecResults.push(`loan_calculator: ${JSON.stringify(lc)}`);
     }
   }
 
