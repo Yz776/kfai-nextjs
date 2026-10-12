@@ -172,12 +172,10 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // Inject pre-executed results as a SEPARATE system message (not in user message)
   // This way the model sees: user question + system with data → answer
-  if (preExecResults.length > 0) {
-    allMessages.push({
-      role: 'system',
-      content: `Tool results (already executed, use this data to answer):\n${preExecResults.join('\n')}\n\nDo NOT call websearch, webfetch, or bash. The data is already above. Just answer the user's question using this data.`,
-    });
-  }
+  // (allMessages is defined below, so we store the pre-exec message and inject after)
+  const preExecSystemMessage = preExecResults.length > 0
+    ? `Tool results (already executed, use this data to answer):\n${preExecResults.join('\n')}\n\nDo NOT call websearch, webfetch, or bash. The data is already above. Just answer the user's question using this data.`
+    : null;
 
   const userMsg = await db.message.create({
     data: {
@@ -197,6 +195,14 @@ export async function POST(req: NextRequest): Promise<Response> {
     { role: 'system', content: SYSTEM_PROMPT },
     ...clean,
   ];
+
+  // Inject pre-executed results AFTER allMessages is built
+  if (preExecSystemMessage) {
+    allMessages.push({
+      role: 'system',
+      content: preExecSystemMessage,
+    });
+  }
 
   // ── SSE stream ──────────────────────────────────────────────────────────────
   const encoder = new TextEncoder();
