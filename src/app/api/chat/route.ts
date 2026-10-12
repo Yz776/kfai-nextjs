@@ -334,6 +334,27 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         // No tool calls → natural stop (model produced final text)
         if (result.tool_calls.length === 0) {
+          // ── PROMPT-BASED TOOL CALLING ────────────────────────────────────────
+          // The model (big-pickle) doesn't support native function calling.
+          // Instead, it outputs tool calls as text: <tool>{"name":"X","args":{...}}</tool>
+          // We parse these from the response content and execute them.
+          const textToolCalls = parseToolCallsFromText(result.content || '');
+          if (textToolCalls.length > 0) {
+            // Execute each tool call found in the text
+            for (const tc of textToolCalls) {
+              if (abortCtrl.signal.aborted) break;
+              send({ type: 'tool_call', id: tc.id, name: tc.name, args: tc.args, iter });
+              const toolResult = await executeTool(tc.name, tc.args, { userId: auth.userId, authId: auth.authId });
+              await db.message.create({
+                data: { conversationId: conversation!.id, userId: auth.userId, role: 'tool', content: JSON.stringify(toolResult), toolCallId: tc.id },
+              }).catch(() => {});
+              send({ type: 'tool_result', id: tc.id, name: tc.name, result: toolResult, status: toolResult.status, iter });
+              allMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(toolResult) });
+            }
+            // Continue the loop — model will get tool results and give final answer
+            continue;
+          }
+          // No tool calls in text → natural stop (model produced final text)
           finalText = result.content;
           send({ type: 'done', iter, reason: 'natural_stop' });
           break;
@@ -548,4 +569,29 @@ function deriveTitle(text: string): string {
   const t = text.trim().replace(/\s+/g, ' ');
   if (t.length <= 60) return t;
   return t.slice(0, 57) + '…';
+}
+
+// ── Parse <tool> blocks from model text response ────────────────────────────────
+// The model (big-pickle) doesn't support native function calling.
+// Instead, it outputs tool calls as text: <tool>{"name":"X","args":{...}}</tool>
+// We parse these from the response content and execute them.
+function parseToolCallsFromText(text: string): Array<{ id: string; name: string; args: Record<string, unknown> }> {
+  const calls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+  const regex = /<tool>\s*(\{[\s\S]*?\})\s*<\/tool>|<tool>\s*(\{[\s\S]*?\})\s*(?:\n|$)/gi;
+  let match;
+  let idx = 0;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const jsonStr = match[1] || match[2];
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.name && typeof parsed.name === 'string') {
+        calls.push({
+          id: `text_tc_${Date.now()}_${idx++}`,
+          name: parsed.name,
+          args: parsed.args || {},
+        });
+      }
+    } catch {}
+  }
+  return calls;
 }
