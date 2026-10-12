@@ -138,7 +138,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // The model (opencode/big-pickle) doesn't properly format tool call arguments.
   // Instead of relying on the model to call tools, we DETECT intent from the
   // user's message, EXECUTE the tools directly on the server, and INJECT the
-  // results as a system message. The model just needs to summarize the answer.
+  // results as a SEPARATE system message. The model just needs to summarize.
   const toolCtx = { userId: auth.userId, authId: auth.authId };
   const preExecResults: string[] = [];
   const lowerText = userText.toLowerCase();
@@ -146,44 +146,37 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Detect time question
   if (/(jam|time|waktu|pukul|what time|saat ini)/i.test(lowerText)) {
     const dt = await executeTool('datetime', { timezone: 'Asia/Jakarta' }, toolCtx);
-    preExecResults.push(`[datetime result: ${JSON.stringify(dt)}]`);
+    preExecResults.push(`datetime: ${JSON.stringify(dt)}`);
   }
 
   // Detect weather question
   if (/(cuaca|weather|suhu|hujan|panas|dingin|temperature)/i.test(lowerText)) {
-    // Extract location — look for capitalized words after "di" or at start
     let location = 'Bandung';
     const diMatch = userText.match(/di\s+([A-Z][a-z]+)/);
     const capMatch = userText.match(/([A-Z][a-z]+)\s+(?:cuaca|sekarang|jam)/);
     if (diMatch) location = diMatch[1];
     else if (capMatch) location = capMatch[1];
     const w = await executeTool('weather', { location }, toolCtx);
-    preExecResults.push(`[weather result for ${location}: ${JSON.stringify(w)}]`);
+    preExecResults.push(`weather(${location}): ${JSON.stringify(w)}`);
   }
 
   // Detect currency question
   if (/(kurs|dollar|usd|idr|rupiah|convert|tukar)/i.test(lowerText)) {
     const fromMatch = userText.match(/(\d+)\s*(?:usd|dollar|\$)/i);
-    const toMatch = userText.match(/(?:ke|to)\s*(idr|rupiah)/i);
     if (fromMatch) {
       const amount = Number(fromMatch[1]);
       const cc = await executeTool('currency_convert', { amount, from: 'USD', to: 'IDR' }, toolCtx);
-      preExecResults.push(`[currency_convert ${amount} USD→IDR: ${JSON.stringify(cc)}]`);
+      preExecResults.push(`currency_convert ${amount} USD→IDR: ${JSON.stringify(cc)}`);
     }
   }
 
-  // Detect search question
-  if (/(cari tahu|search|googling|google|berapa|bagaimana cara|apa itu|siapa)/i.test(lowerText) && preExecResults.length === 0) {
-    // Only auto-search if no other tool was triggered
-    const searchQuery = userText.replace(/[?!.]/g, '').trim().slice(0, 100);
-    const gs = await executeTool('google_search', { query: searchQuery }, toolCtx);
-    preExecResults.push(`[google_search result for "${searchQuery}": ${JSON.stringify(gs).slice(0, 1000)}]`);
-  }
-
-  // Inject pre-executed results into the user message
+  // Inject pre-executed results as a SEPARATE system message (not in user message)
+  // This way the model sees: user question + system with data → answer
   if (preExecResults.length > 0) {
-    userMessageContent += '\n\n' + preExecResults.join('\n\n') +
-      '\n\n[NOTE: Tools already executed. Use the results above to answer. DO NOT call websearch, webfetch, or bash — the data is already provided above.]';
+    allMessages.push({
+      role: 'system',
+      content: `Tool results (already executed, use this data to answer):\n${preExecResults.join('\n')}\n\nDo NOT call websearch, webfetch, or bash. The data is already above. Just answer the user's question using this data.`,
+    });
   }
 
   const userMsg = await db.message.create({
