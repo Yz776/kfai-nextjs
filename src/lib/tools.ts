@@ -2021,10 +2021,6 @@ function jsonToXmlString(obj: any, name: string, indent: number): string {
   const children = Object.entries(obj).map(([k, v]) => jsonToXmlString(v, k, indent + 1)).join('\n');
   return `${pad}<${name}>\n${children}\n${pad}</${name}>`;
 }
-function escapeXml(s: string): string {
-  return s.replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":"&apos;"}[c]!));
-}
-
 function toolXmlToJson(xml: string): ToolResult {
   try {
     // Very basic XML parser — handles simple structures
