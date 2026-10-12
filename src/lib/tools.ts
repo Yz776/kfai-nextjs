@@ -130,9 +130,11 @@ export async function executeTool(
       // ── Vision: analyze image ──
       case 'vision_analyze':  return await toolVisionAnalyze(ctx, String(args.image ?? args.imageUrl ?? ''), String(args.prompt ?? 'Describe this image.'), typeof args.model === 'string' ? args.model : undefined);
       default: {
-        // Built-in model tools that don't exist in our environment — give a helpful
-        // redirect message so the model knows which KFAI tool to use instead.
-        const builtinRedirects: Record<string, string> = {
+        // ── AUTO-REDIRECT: built-in tools → execute KFAI equivalent ──────────
+        // Instead of returning an error, we AUTO-EXECUTE the equivalent tool
+        // so the AI gets the result it needs without having to retry.
+        const lower = name.toLowerCase();
+        const autoRedirects: Record<string, string> = {
           websearch: 'google_search',
           web_fetch: 'http_fetch',
           webfetch: 'http_fetch',
@@ -140,26 +142,37 @@ export async function executeTool(
           write: 'file_save',
           edit: 'file_save',
           glob: 'file_list',
-          grep: 'bash',
           ls: 'file_list',
         };
-        const lower = name.toLowerCase();
-        if (builtinRedirects[lower]) {
+        if (autoRedirects[lower]) {
+          const target = autoRedirects[lower];
+          // Map args from built-in tool to KFAI equivalent
+          let mappedArgs = args;
+          if (lower === 'read' || lower === 'glob' || lower === 'ls') {
+            mappedArgs = { filename: String(args.path ?? args.filepath ?? args.pattern ?? ''), subdir: String(args.path ?? '') };
+          } else if (lower === 'write' || lower === 'edit') {
+            mappedArgs = { filename: String(args.path ?? args.filepath ?? args.file ?? ''), content: String(args.content ?? args.text ?? '') };
+          } else if (lower === 'webfetch' || lower === 'web_fetch') {
+            mappedArgs = { url: String(args.url ?? args.href ?? '') };
+          } else if (lower === 'websearch') {
+            mappedArgs = { query: String(args.query ?? args.q ?? args.search ?? '') };
+          }
+          // Execute the target tool with mapped args
+          const result = await executeTool(target, mappedArgs, ctx);
           return {
-            status: 'error',
-            error: `Unknown tool: ${name}. Use "${builtinRedirects[lower]}" instead — it is the KFAI equivalent that works in this environment.`,
+            ...result,
+            _autoRedirected: `${name} → ${target}`,
           };
         }
-        // Other built-in tools (skill, task, todowrite) — these have no KFAI
-        // equivalent. Tell the model to stop using tools and answer directly.
-        const noEquivalent = ['skill', 'task', 'todowrite'];
+        // Other built-in tools with no equivalent — tell model to answer directly
+        const noEquivalent = ['skill', 'task', 'todowrite', 'list_files', 'create_file', 'str_replace'];
         if (noEquivalent.includes(lower)) {
           return {
             status: 'error',
-            error: `Unknown tool: ${name}. This tool has no equivalent in KFAI. Stop calling tools and answer directly from your knowledge.`,
+            error: `Unknown tool: ${name}. Stop calling this tool. If you need to read files, use file_load. If you need to write, use file_save. If you need to list, use file_list. Otherwise, answer directly from your knowledge.`,
           };
         }
-        return { status: 'error', error: `Unknown tool: ${name}` };
+        return { status: 'error', error: `Unknown tool: ${name}. Available tools: bash, calculator, google_search, web_search, http_fetch, datetime, weather, currency_convert, file_save, file_load, file_list, file_tree, file_copy, file_move, file_delete, file_append, diff_files, code_format, file_download_link, vision_analyze, env_get, env_set, env_list, notes_save, notes_load, plan, reflect, task_complete, krouter_status, krouter_usage, krouter_fetch, uuid, hash, base64, word_count, json_format, color_convert, timestamp_convert.` };
       }
     }
   } catch (e: any) {
@@ -468,7 +481,7 @@ async function toolListModels(): Promise<ToolResult> {
 // File redirects (>, >>) are ALLOWED so the AI can save programs/scripts/data.
 async function toolBash(command: string, ctx?: ToolContext): Promise<ToolResult> {
   const cmd = command.trim();
-  if (!cmd) return { status: 'error', error: 'Empty command' };
+  if (!cmd) return { status: 'error', error: 'Empty command. Provide a shell command to execute, e.g. bash("ls -la") or bash("echo hello > file.txt")' };
   if (cmd.length > 3000) return { status: 'error', error: 'Command too long (max 3000 chars)' };
 
   // Hard-block dangerous patterns. Allow $((expr)) arithmetic, block $(cmd).
