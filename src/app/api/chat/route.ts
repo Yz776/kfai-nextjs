@@ -134,6 +134,32 @@ export async function POST(req: NextRequest): Promise<Response> {
     const imageList = imageAttachments.map((f) => `- ${f}`).join('\n');
     userMessageContent = `${userText}${userText ? '\n\n' : ''}[Image attached — call vision_analyze to see it:]\n${imageList}`;
   }
+
+  // ── SMART INTERCEPT: detect intent and inject tool hints ─────────────────────
+  // The model often doesn't use the right KFAI tools. If we detect the user is
+  // asking about time/weather/search/etc., we inject a hint telling the model
+  // EXACTLY which tool to call and with what args.
+  const lowerText = userText.toLowerCase();
+  const hints: string[] = [];
+  if (/(jam|time|waktu|pukul)/i.test(lowerText)) {
+    hints.push('IMPORTANT: Call the datetime tool with timezone="Asia/Jakarta" to get the current time.');
+  }
+  if (/(cuaca|weather|suhu|hujan|panas)/i.test(lowerText)) {
+    // Extract location
+    const locMatch = userText.match(/(?:di|di\s|yang\s)?([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/);
+    const loc = locMatch ? locMatch[1] : 'Bandung';
+    hints.push(`IMPORTANT: Call the weather tool with location="${loc}" to get current weather.`);
+  }
+  if (/(cari|search|cari tahu|googling)/i.test(lowerText)) {
+    hints.push('IMPORTANT: Call the google_search tool with the search query.');
+  }
+  if (/(kurs|dollar|usd|idr|uang|convert)/i.test(lowerText)) {
+    hints.push('IMPORTANT: Call the currency_convert tool for exchange rates.');
+  }
+  if (hints.length > 0) {
+    userMessageContent += '\n\n' + hints.join('\n');
+  }
+
   const userMsg = await db.message.create({
     data: {
       conversationId: conversation.id,

@@ -147,15 +147,25 @@ export async function executeTool(
         if (autoRedirects[lower]) {
           const target = autoRedirects[lower];
           // Map args from built-in tool to KFAI equivalent
+          // Handle case where model sends empty args — provide sensible defaults
           let mappedArgs = args;
           if (lower === 'read' || lower === 'glob' || lower === 'ls') {
-            mappedArgs = { filename: String(args.path ?? args.filepath ?? args.pattern ?? ''), subdir: String(args.path ?? '') };
+            const fn = String(args.path ?? args.filepath ?? args.pattern ?? args.filename ?? '');
+            if (!fn) return { status: 'error', error: 'No file path provided. Use file_list to see available files first.' };
+            mappedArgs = { filename: fn };
           } else if (lower === 'write' || lower === 'edit') {
-            mappedArgs = { filename: String(args.path ?? args.filepath ?? args.file ?? ''), content: String(args.content ?? args.text ?? '') };
+            const fn = String(args.path ?? args.filepath ?? args.file ?? args.filename ?? '');
+            const content = String(args.content ?? args.text ?? args.new_string ?? '');
+            if (!fn) return { status: 'error', error: 'No file path provided. Use file_save(filename, content) instead.' };
+            mappedArgs = { filename: fn, content };
           } else if (lower === 'webfetch' || lower === 'web_fetch') {
-            mappedArgs = { url: String(args.url ?? args.href ?? '') };
+            const url = String(args.url ?? args.href ?? '');
+            if (!url) return { status: 'error', error: 'No URL provided. Use http_fetch(url) instead.' };
+            mappedArgs = { url };
           } else if (lower === 'websearch') {
-            mappedArgs = { query: String(args.query ?? args.q ?? args.search ?? '') };
+            const query = String(args.query ?? args.q ?? args.search ?? '');
+            if (!query) return { status: 'error', error: 'No search query provided. Use google_search(query) instead.' };
+            mappedArgs = { query };
           }
           // Execute the target tool with mapped args
           const result = await executeTool(target, mappedArgs, ctx);
