@@ -125,6 +125,61 @@ export async function executeTool(
       case 'diff_files':     return await toolDiffFiles(ctx, String(args.fileA ?? ''), String(args.fileB ?? ''));
       // ── Code formatting ──
       case 'code_format':    return toolCodeFormat(String(args.code ?? ''), String(args.language ?? 'json'));
+      // ── Super Tools: Format Converters ──
+      case 'json_to_yaml':  return toolJsonToYaml(String(args.json ?? ''));
+      case 'yaml_to_json':  return toolYamlToJson(String(args.yaml ?? ''));
+      case 'json_to_xml':   return toolJsonToXml(String(args.json ?? ''), String(args.root ?? 'root'));
+      case 'xml_to_json':   return toolXmlToJson(String(args.xml ?? ''));
+      case 'csv_to_markdown': return toolCsvToMarkdown(String(args.csv ?? ''));
+      // ── Super Tools: Encoders ──
+      case 'base32':        return toolBase32(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'hex_encode':    return toolHexEncode(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'binary_convert': return toolBinaryConvert(String(args.text ?? ''), String(args.action ?? 'encode'));
+      case 'rot13':         return toolRot13(String(args.text ?? ''));
+      case 'jwt_decode':    return toolJwtDecode(String(args.token ?? ''));
+      // ── Super Tools: Validators ──
+      case 'email_validate': return toolEmailValidate(String(args.email ?? ''));
+      case 'url_validate':  return toolUrlValidate(String(args.url ?? ''));
+      case 'ip_validate':   return toolIpValidate(String(args.ip ?? ''));
+      case 'credit_card_validate': return toolCreditCardValidate(String(args.number ?? ''));
+      // ── Super Tools: Extractors ──
+      case 'extract_urls':  return toolExtractUrls(String(args.text ?? ''));
+      case 'extract_emails': return toolExtractEmails(String(args.text ?? ''));
+      case 'extract_phone': return toolExtractPhone(String(args.text ?? ''));
+      case 'extract_hashtags': return toolExtractHashtags(String(args.text ?? ''));
+      // ── Super Tools: String Analysis ──
+      case 'levenshtein':   return toolLevenshtein(String(args.a ?? ''), String(args.b ?? ''));
+      case 'palindrome_check': return toolPalindromeCheck(String(args.text ?? ''));
+      case 'anagram_check': return toolAnagramCheck(String(args.a ?? ''), String(args.b ?? ''));
+      // ── Super Tools: Math & Finance ──
+      case 'bmi_calculator': return toolBmiCalculator(Number(args.weight ?? 0), Number(args.height ?? 0));
+      case 'loan_calculator': return toolLoanCalculator(Number(args.principal ?? 0), Number(args.rate ?? 0), Number(args.years ?? 0));
+      case 'compound_interest': return toolCompoundInterest(Number(args.principal ?? 0), Number(args.rate ?? 0), Number(args.years ?? 0), Number(args.compound_per_year ?? 12));
+      case 'percent_calc':  return toolPercentCalc(Number(args.value ?? 0), Number(args.total ?? 0));
+      case 'tip_calculator': return toolTipCalculator(Number(args.bill ?? 0), Number(args.tip_percent ?? 15), Number(args.people ?? 1));
+      // ── Super Tools: Date & Time ──
+      case 'time_diff':     return toolTimeDiff(String(args.date_a ?? ''), String(args.date_b ?? ''));
+      case 'age_calculator': return toolAgeCalculator(String(args.birthdate ?? ''));
+      case 'cron_next':     return toolCronNext(String(args.expression ?? ''), Number(args.count ?? 1));
+      // ── Super Tools: Random Generators ──
+      case 'random_choice': return toolRandomChoice(String(args.items ?? ''), Number(args.count ?? 1));
+      case 'dice_roll':     return toolDiceRoll(Number(args.count ?? 1), Number(args.sides ?? 6));
+      case 'lottery_numbers': return toolLotteryNumbers(Number(args.count ?? 6), Number(args.max ?? 49));
+      case 'nanoid_generate': return toolNanoId(Number(args.length ?? 21));
+      case 'token_generate': return toolTokenGenerate(Number(args.length ?? 32), String(args.charset ?? 'alphanumeric'));
+      case 'password_strength': return toolPasswordStrength(String(args.password ?? ''));
+      // ── Super Tools: Text Processing ──
+      case 'text_replace':  return toolTextReplace(String(args.text ?? ''), String(args.find ?? ''), String(args.replace ?? ''), args.use_regex === true);
+      case 'text_wrap':     return toolTextWrap(String(args.text ?? ''), Number(args.width ?? 80));
+      case 'string_pad':    return toolStringPad(String(args.text ?? ''), Number(args.length ?? 0), String(args.char ?? ' '), String(args.direction ?? 'right'));
+      case 'word_frequency': return toolWordFrequency(String(args.text ?? ''), Number(args.top ?? 10));
+      case 'keyword_extract': return toolKeywordExtract(String(args.text ?? ''));
+      case 'sentiment_basic': return toolSentimentBasic(String(args.text ?? ''));
+      case 'minify_code':   return toolMinifyCode(String(args.code ?? ''), String(args.language ?? 'js'));
+      case 'markdown_to_plain': return toolMarkdownToPlain(String(args.markdown ?? ''));
+      case 'text_shuffle':  return toolTextShuffle(String(args.text ?? ''), String(args.mode ?? 'words'));
+      case 'reverse_lines': return toolTextReverseLines(String(args.text ?? ''));
+      case 'color_palette': return toolColorPalette(String(args.color ?? '#3b82f6'));
       // ── Secure file download (signed URL) ──
       case 'file_download_link': return await toolFileDownloadLink(ctx, String(args.filename ?? ''), Number(args.ttlSec ?? 300));
       // ── Vision: analyze image ──
@@ -1899,4 +1954,523 @@ function toolCodeFormat(code: string, language: string): ToolResult {
   } catch (e: any) {
     return { status: 'error', error: e?.message || 'Failed to format code' };
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SUPER TOOLS — 30+ new tools for maximum AI capability
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Format Converters ────────────────────────────────────────────────────────
+function toolJsonToYaml(json: string): ToolResult {
+  try {
+    const data = JSON.parse(json);
+    const yaml = jsonToYamlString(data, 0);
+    return { status: 'done', yaml, format: 'yaml' };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid JSON' }; }
+}
+function jsonToYamlString(obj: any, indent: number): string {
+  const pad = '  '.repeat(indent);
+  if (obj === null) return 'null';
+  if (typeof obj !== 'object') return String(obj);
+  if (Array.isArray(obj)) {
+    return obj.map(item => `${pad}- ${jsonToYamlString(item, indent + 1)}`).join('\n');
+  }
+  return Object.entries(obj).map(([k, v]) => {
+    if (v !== null && typeof v === 'object') return `${pad}${k}:\n${jsonToYamlString(v, indent + 1)}`;
+    return `${pad}${k}: ${v === null ? 'null' : String(v)}`;
+  }).join('\n');
+}
+
+function toolYamlToJson(yaml: string): ToolResult {
+  try {
+    const lines = yaml.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+    const result: any = {};
+    let currentObj = result;
+    const stack: any[] = [result];
+    for (const line of lines) {
+      const match = line.match(/^(\s*)([^:]+):\s*(.*)$/);
+      if (!match) continue;
+      const indent = match[1].length;
+      const key = match[2].trim();
+      const value = match[3].trim();
+      while (stack.length > 1 && (stack.length - 1) * 2 > indent) stack.pop();
+      currentObj = stack[stack.length - 1];
+      if (value === '') {
+        currentObj[key] = {};
+        stack.push(currentObj[key]);
+      } else {
+        currentObj[key] = isNaN(Number(value)) ? (value === 'true' ? true : value === 'false' ? false : value) : Number(value);
+      }
+    }
+    return { status: 'done', json: JSON.stringify(result, null, 2) };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid YAML' }; }
+}
+
+function toolJsonToXml(json: string, rootName: string = 'root'): ToolResult {
+  try {
+    const data = JSON.parse(json);
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n${jsonToXmlString(data, rootName, 0)}`;
+    return { status: 'done', xml };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid JSON' }; }
+}
+function jsonToXmlString(obj: any, name: string, indent: number): string {
+  const pad = '  '.repeat(indent);
+  if (obj === null || obj === undefined) return `${pad}<${name} />`;
+  if (typeof obj !== 'object') return `${pad}<${name}>${escapeXml(String(obj))}</${name}>`;
+  if (Array.isArray(obj)) return obj.map(item => jsonToXmlString(item, name, indent)).join('\n');
+  const children = Object.entries(obj).map(([k, v]) => jsonToXmlString(v, k, indent + 1)).join('\n');
+  return `${pad}<${name}>\n${children}\n${pad}</${name}>`;
+}
+function escapeXml(s: string): string {
+  return s.replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":"&apos;"}[c]!));
+}
+
+function toolXmlToJson(xml: string): ToolResult {
+  try {
+    // Very basic XML parser — handles simple structures
+    const result: any = {};
+    const tagRegex = /<(\w+)(?:\s[^>]*)?>([^<]*)<\/\1>|<(\w+)(?:\s[^>]*)?\/>/g;
+    let match;
+    while ((match = tagRegex.exec(xml)) !== null) {
+      const tag = match[1] || match[3];
+      const content = match[2] || '';
+      if (content.trim()) result[tag] = content.trim();
+      else result[tag] = '';
+    }
+    return { status: 'done', json: JSON.stringify(result, null, 2) };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid XML' }; }
+}
+
+function toolCsvToMarkdown(csv: string): ToolResult {
+  try {
+    const lines = csv.trim().split('\n');
+    if (lines.length < 1) return { status: 'error', error: 'Empty CSV' };
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const rows = lines.slice(1).map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
+    let md = `| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |\n`;
+    for (const row of rows) md += `| ${row.join(' | ')} |\n`;
+    return { status: 'done', markdown: md };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid CSV' }; }
+}
+
+// ── Encoders ─────────────────────────────────────────────────────────────────
+function toolBase32(text: string, action: string): ToolResult {
+  try {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    if (action === 'encode') {
+      const bytes = Buffer.from(text, 'utf8');
+      let result = '';
+      let bits = 0, value = 0;
+      for (const byte of bytes) {
+        value = (value << 8) | byte;
+        bits += 8;
+        while (bits >= 5) { result += chars[(value >>> (bits - 5)) & 31]; bits -= 5; }
+      }
+      if (bits > 0) result += chars[(value << (5 - bits)) & 31];
+      return { status: 'done', result, action: 'base32_encode' };
+    } else {
+      const clean = text.toUpperCase().replace(/[^A-Z2-7]/g, '');
+      let bits = 0, value = 0;
+      const bytes: number[] = [];
+      for (const c of clean) {
+        const idx = chars.indexOf(c);
+        if (idx < 0) continue;
+        value = (value << 5) | idx; bits += 5;
+        if (bits >= 8) { bytes.push((value >>> (bits - 8)) & 255); bits -= 8; }
+      }
+      return { status: 'done', result: Buffer.from(bytes).toString('utf8'), action: 'base32_decode' };
+    }
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Failed' }; }
+}
+
+function toolHexEncode(text: string, action: string): ToolResult {
+  try {
+    if (action === 'encode') return { status: 'done', result: Buffer.from(text, 'utf8').toString('hex') };
+    return { status: 'done', result: Buffer.from(text, 'hex').toString('utf8') };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Failed' }; }
+}
+
+function toolBinaryConvert(text: string, action: string): ToolResult {
+  try {
+    if (action === 'encode') {
+      return { status: 'done', result: text.split('').map(c => c.charCodeAt(0).toString(2).padStart(8, '0')).join(' ') };
+    }
+    const bytes = text.split(/\s+/).map(b => parseInt(b, 2));
+    return { status: 'done', result: String.fromCharCode(...bytes) };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Failed' }; }
+}
+
+function toolRot13(text: string): ToolResult {
+  const result = text.replace(/[a-zA-Z]/g, c => {
+    const base = c <= 'Z' ? 65 : 97;
+    return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
+  });
+  return { status: 'done', result, encoding: 'rot13' };
+}
+
+function toolJwtDecode(token: string): ToolResult {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return { status: 'error', error: 'Invalid JWT format (expected 3 parts)' };
+    const decode = (s: string) => JSON.parse(Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString());
+    const header = decode(parts[0]);
+    const payload = decode(parts[1]);
+    return { status: 'done', header, payload, signature: parts[2] + ' (not verified)', note: 'Signature NOT verified — only decoded' };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Invalid JWT' }; }
+}
+
+// ── Validators ───────────────────────────────────────────────────────────────
+function toolEmailValidate(email: string): ToolResult {
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const domain = email.split('@')[1] || '';
+  return { status: 'done', valid, email, domain, suggestion: valid ? 'Valid email format' : 'Invalid email format' };
+}
+
+function toolUrlValidate(url: string): ToolResult {
+  try { const u = new URL(url); return { status: 'done', valid: true, protocol: u.protocol, hostname: u.hostname, pathname: u.pathname }; }
+  catch { return { status: 'done', valid: false, url }; }
+}
+
+function toolIpValidate(ip: string): ToolResult {
+  const v4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every(n => Number(n) <= 255);
+  const v6 = ip.includes(':') && /^[0-9a-f:]+$/i.test(ip);
+  return { status: 'done', valid: v4 || v6, version: v4 ? 'IPv4' : v6 ? 'IPv6' : 'invalid', ip };
+}
+
+function toolCreditCardValidate(number: string): ToolResult {
+  const num = number.replace(/\D/g, '');
+  if (num.length < 13 || num.length > 19) return { status: 'done', valid: false, reason: 'Invalid length' };
+  let sum = 0, alt = false;
+  for (let i = num.length - 1; i >= 0; i--) {
+    let d = parseInt(num[i], 10);
+    if (alt) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; alt = !alt;
+  }
+  const valid = sum % 10 === 0;
+  let type = 'Unknown';
+  if (/^4/.test(num)) type = 'Visa';
+  else if (/^5[1-5]/.test(num)) type = 'Mastercard';
+  else if (/^3[47]/.test(num)) type = 'Amex';
+  else if (/^6(?:011|5)/.test(num)) type = 'Discover';
+  return { status: 'done', valid, type, number_masked: '****' + num.slice(-4) };
+}
+
+// ── Text Extractors ──────────────────────────────────────────────────────────
+function toolExtractUrls(text: string): ToolResult {
+  const urls = text.match(/https?:\/\/[^\s<>"'{}|\\^`]+/gi) || [];
+  return { status: 'done', count: urls.length, urls: [...new Set(urls)] };
+}
+
+function toolExtractEmails(text: string): ToolResult {
+  const emails = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+  return { status: 'done', count: emails.length, emails: [...new Set(emails)] };
+}
+
+function toolExtractPhone(text: string): ToolResult {
+  const phones = text.match(/(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}/g) || [];
+  return { status: 'done', count: phones.length, phones: [...new Set(phones)] };
+}
+
+function toolExtractHashtags(text: string): ToolResult {
+  const tags = text.match(/#[\w\u00C0-\u024F]+/g) || [];
+  return { status: 'done', count: tags.length, hashtags: [...new Set(tags)] };
+}
+
+// ── String Analysis ──────────────────────────────────────────────────────────
+function toolLevenshtein(a: string, b: string): ToolResult {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++)
+    dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : Math.min(dp[i-1][j-1], dp[i][j-1], dp[i-1][j]) + 1;
+  const distance = dp[m][n];
+  const maxLen = Math.max(m, n);
+  const similarity = maxLen === 0 ? 100 : Math.round((1 - distance / maxLen) * 100);
+  return { status: 'done', distance, similarity_percent: similarity, a_length: m, b_length: n };
+}
+
+function toolPalindromeCheck(text: string): ToolResult {
+  const clean = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isPalindrome = clean === clean.split('').reverse().join('');
+  return { status: 'done', is_palindrome: isPalindrome, text, cleaned: clean };
+}
+
+// ── Math & Finance ───────────────────────────────────────────────────────────
+function toolBmiCalculator(weightKg: number, heightCm: number): ToolResult {
+  if (weightKg <= 0 || heightCm <= 0) return { status: 'error', error: 'Weight and height must be positive' };
+  const heightM = heightCm / 100;
+  const bmi = weightKg / (heightM * heightM);
+  let category = '';
+  if (bmi < 18.5) category = 'Underweight';
+  else if (bmi < 25) category = 'Normal weight';
+  else if (bmi < 30) category = 'Overweight';
+  else category = 'Obese';
+  return { status: 'done', bmi: Math.round(bmi * 10) / 10, category, weight_kg: weightKg, height_cm: heightCm };
+}
+
+function toolLoanCalculator(principal: number, annualRate: number, years: number): ToolResult {
+  if (principal <= 0 || years <= 0) return { status: 'error', error: 'Principal and years must be positive' };
+  const r = annualRate / 100 / 12;
+  const n = years * 12;
+  const monthly = r === 0 ? principal / n : principal * r * Math.pow(1 + r, n) / (Math.pow(1 + r, n) - 1);
+  const total = monthly * n;
+  const interest = total - principal;
+  return { status: 'done', monthly_payment: Math.round(monthly * 100) / 100, total_payment: Math.round(total * 100) / 100, total_interest: Math.round(interest * 100) / 100, principal, annual_rate: annualRate, years };
+}
+
+function toolCompoundInterest(principal: number, rate: number, years: number, compoundPerYear: number): ToolResult {
+  const r = rate / 100;
+  const n = compoundPerYear || 12;
+  const amount = principal * Math.pow(1 + r / n, n * years);
+  const interest = amount - principal;
+  return { status: 'done', final_amount: Math.round(amount * 100) / 100, total_interest: Math.round(interest * 100) / 100, principal, rate, years, compounded: n + 'x/year' };
+}
+
+function toolPercentCalc(value: number, total: number): ToolResult {
+  if (total === 0) return { status: 'error', error: 'Total cannot be zero' };
+  const percent = (value / total) * 100;
+  return { status: 'done', percent: Math.round(percent * 100) / 100, value, total };
+}
+
+function toolTipCalculator(bill: number, tipPercent: number, people: number): ToolResult {
+  const tip = bill * (tipPercent / 100);
+  const total = bill + tip;
+  const perPerson = total / (people || 1);
+  return { status: 'done', tip: Math.round(tip * 100) / 100, total: Math.round(total * 100) / 100, per_person: Math.round(perPerson * 100) / 100 };
+}
+
+// ── Date & Time ──────────────────────────────────────────────────────────────
+function toolTimeDiff(dateA: string, dateB: string): ToolResult {
+  const a = new Date(dateA), b = new Date(dateB);
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return { status: 'error', error: 'Invalid date format. Use ISO 8601.' };
+  const diffMs = Math.abs(b.getTime() - a.getTime());
+  const days = Math.floor(diffMs / 86400000);
+  const hours = Math.floor((diffMs % 86400000) / 3600000);
+  const minutes = Math.floor((diffMs % 3600000) / 60000);
+  return { status: 'done', milliseconds: diffMs, days, hours, minutes, human: `${days}d ${hours}h ${minutes}m` };
+}
+
+function toolAgeCalculator(birthdate: string): ToolResult {
+  const birth = new Date(birthdate);
+  if (isNaN(birth.getTime())) return { status: 'error', error: 'Invalid date' };
+  const now = new Date();
+  let years = now.getFullYear() - birth.getFullYear();
+  let months = now.getMonth() - birth.getMonth();
+  if (months < 0) { years--; months += 12; }
+  const days = Math.floor((now.getTime() - birth.getTime()) / 86400000);
+  return { status: 'done', years, months, total_days: days, birthdate, calculated_at: now.toISOString() };
+}
+
+// ── Random Generators ────────────────────────────────────────────────────────
+function toolRandomChoice(items: string, count: number): ToolResult {
+  const list = items.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+  if (list.length === 0) return { status: 'error', error: 'No items provided' };
+  const picks: string[] = [];
+  for (let i = 0; i < Math.min(count || 1, list.length); i++) {
+    const idx = Math.floor(Math.random() * list.length);
+    picks.push(list.splice(idx, 1)[0]);
+  }
+  return { status: 'done', picks, count: picks.length };
+}
+
+function toolDiceRoll(count: number, sides: number): ToolResult {
+  const rolls: number[] = [];
+  for (let i = 0; i < Math.min(count || 1, 100); i++) rolls.push(Math.floor(Math.random() * (sides || 6)) + 1);
+  return { status: 'done', rolls, total: rolls.reduce((a, b) => a + b, 0), count: rolls.length, sides: sides || 6 };
+}
+
+function toolLotteryNumbers(count: number, max: number): ToolResult {
+  const pool = Array.from({ length: max || 49 }, (_, i) => i + 1);
+  const picks: number[] = [];
+  for (let i = 0; i < Math.min(count || 6, pool.length); i++) {
+    picks.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  return { status: 'done', numbers: picks.sort((a, b) => a - b), count: picks.length, max: max || 49 };
+}
+
+function toolNanoId(length: number): ToolResult {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+  const len = Math.min(Math.max(length || 21, 4), 100);
+  let id = '';
+  for (let i = 0; i < len; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return { status: 'done', id, length: len };
+}
+
+function toolTokenGenerate(length: number, charset: string): ToolResult {
+  const sets: Record<string, string> = {
+    hex: '0123456789abcdef',
+    alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+    urlsafe: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_',
+    numeric: '0123456789',
+    base64: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
+  };
+  const chars = sets[charset || 'alphanumeric'] || sets.alphanumeric;
+  const len = Math.min(Math.max(length || 32, 8), 256);
+  let token = '';
+  for (let i = 0; i < len; i++) token += chars[Math.floor(Math.random() * chars.length)];
+  return { status: 'done', token, length: len, charset: charset || 'alphanumeric' };
+}
+
+function toolPasswordStrength(password: string): ToolResult {
+  let score = 0;
+  const checks: string[] = [];
+  if (password.length >= 8) { score += 1; checks.push('length >= 8'); }
+  if (password.length >= 16) { score += 1; checks.push('length >= 16'); }
+  if (/[a-z]/.test(password)) { score += 1; checks.push('has lowercase'); }
+  if (/[A-Z]/.test(password)) { score += 1; checks.push('has uppercase'); }
+  if (/[0-9]/.test(password)) { score += 1; checks.push('has digits'); }
+  if (/[^a-zA-Z0-9]/.test(password)) { score += 1; checks.push('has special chars'); }
+  const level = score <= 2 ? 'weak' : score <= 4 ? 'medium' : 'strong';
+  return { status: 'done', score, max_score: 6, level, checks, length: password.length };
+}
+
+// ── Text Processing ─────────────────────────────────────────────────────────
+function toolTextReplace(text: string, find: string, replace: string, useRegex: boolean): ToolResult {
+  try {
+    if (useRegex) {
+      const re = new RegExp(find, 'gi');
+      const count = (text.match(re) || []).length;
+      return { status: 'done', result: text.replace(re, replace), replacements: count };
+    }
+    const parts = text.split(find);
+    return { status: 'done', result: parts.join(replace), replacements: parts.length - 1 };
+  } catch (e: any) { return { status: 'error', error: e?.message || 'Failed' }; }
+}
+
+function toolTextWrap(text: string, width: number): ToolResult {
+  const w = Math.min(Math.max(width || 80, 10), 500);
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of words) {
+    if ((line + ' ' + word).length > w) { lines.push(line); line = word; }
+    else line += (line ? ' ' : '') + word;
+  }
+  if (line) lines.push(line);
+  return { status: 'done', wrapped: lines.join('\n'), line_count: lines.length, width: w };
+}
+
+function toolStringPad(text: string, length: number, char: string, direction: string): ToolResult {
+  const padChar = (char || ' ')[0] || ' ';
+  const len = Math.min(Math.max(length || text.length, text.length), 1000);
+  if (direction === 'left') return { status: 'done', result: text.padStart(len, padChar) };
+  if (direction === 'both') {
+    const total = len - text.length;
+    const left = Math.floor(total / 2);
+    return { status: 'done', result: padChar.repeat(left) + text + padChar.repeat(total - left) };
+  }
+  return { status: 'done', result: text.padEnd(len, padChar) };
+}
+
+function toolWordFrequency(text: string, topN: number): ToolResult {
+  const words = text.toLowerCase().match(/\b[\w']+\b/g) || [];
+  const freq: Record<string, number> = {};
+  for (const w of words) freq[w] = (freq[w] || 0) + 1;
+  const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, topN || 10);
+  return { status: 'done', total_words: words.length, unique_words: Object.keys(freq).length, top: sorted.map(([word, count]) => ({ word, count, percent: Math.round(count / words.length * 1000) / 10 })) };
+}
+
+function toolKeywordExtract(text: string): ToolResult {
+  const stopWords = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','by','is','are','was','were','be','been','being','have','has','had','do','does','did','will','would','could','should','may','might','must','can','this','that','these','those','i','you','he','she','it','we','they','what','which','who','when','where','why','how','dan','atau','di','ke','dari','yang','untuk','dengan','pada','dalam','ini','itu','adalah','akan','tidak','juga','saya','kamu']);
+  const words = text.toLowerCase().match(/\b[\w']+\b/g) || [];
+  const freq: Record<string, number> = {};
+  for (const w of words) if (w.length > 3 && !stopWords.has(w)) freq[w] = (freq[w] || 0) + 1;
+  const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([word, count]) => word);
+  return { status: 'done', keywords, count: keywords.length };
+}
+
+function toolSentimentBasic(text: string): ToolResult {
+  const positive = ['good','great','excellent','amazing','wonderful','fantastic','love','happy','best','awesome','perfect','beautiful','nice','super','baik','bagus','hebat','mantap','keren','suka','senang','indah'];
+  const negative = ['bad','terrible','awful','horrible','worst','hate','sad','angry','ugly','stupid','fail','buruk','jelek','buruk','benci','sedih','marah','gagal','jelek'];
+  const lower = text.toLowerCase();
+  let pos = 0, neg = 0;
+  for (const w of positive) if (lower.includes(w)) pos++;
+  for (const w of negative) if (lower.includes(w)) neg++;
+  const score = pos - neg;
+  const sentiment = score > 0 ? 'positive' : score < 0 ? 'negative' : 'neutral';
+  return { status: 'done', sentiment, score, positive_words: pos, negative_words: neg, confidence: Math.abs(score) / Math.max(1, pos + neg) };
+}
+
+function toolMinifyCode(code: string, language: string): ToolResult {
+  const lang = (language || 'js').toLowerCase();
+  let result = code;
+  if (lang === 'js' || lang === 'javascript' || lang === 'ts' || lang === 'typescript' || lang === 'css') {
+    result = code
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s*([{}();,:])\s*/g, '$1')
+      .trim();
+  } else if (lang === 'html') {
+    result = code.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').replace(/>\s+</g, '><').trim();
+  } else if (lang === 'json') {
+    result = JSON.stringify(JSON.parse(code));
+  }
+  return { status: 'done', minified: result, original_size: code.length, minified_size: result.length, savings: Math.round((1 - result.length / code.length) * 100) + '%' };
+}
+
+function toolMarkdownToPlain(md: string): ToolResult {
+  const plain = md
+    .replace(/```[\s\S]*?```/g, '[code block]')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/^#+\s*/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[\-\*]\s+/gm, '• ')
+    .replace(/^\d+\.\s+/gm, '• ')
+    .replace(/^>\s+/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { status: 'done', plain_text: plain, length: plain.length };
+}
+
+function toolAnagramCheck(wordA: string, wordB: string): ToolResult {
+  const a = wordA.toLowerCase().replace(/[^a-z0-9]/g, '').split('').sort().join('');
+  const b = wordB.toLowerCase().replace(/[^a-z0-9]/g, '').split('').sort().join('');
+  return { status: 'done', is_anagram: a === b, wordA, wordB };
+}
+
+function toolColorPalette(baseColor: string): ToolResult {
+  const hex = baseColor.replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return { status: 'error', error: 'Invalid hex color (use #RRGGBB)' };
+  const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+  const toHex = (n: number) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+  return {
+    status: 'done',
+    base: '#' + hex,
+    lighter: '#' + toHex(r + 40) + toHex(g + 40) + toHex(b + 40),
+    darker: '#' + toHex(r - 40) + toHex(g - 40) + toHex(b - 40),
+    complementary: '#' + toHex(255 - r) + toHex(255 - g) + toHex(255 - b),
+    analogous1: '#' + toHex(r + 20) + toHex(g - 10) + toHex(b - 20),
+    analogous2: '#' + toHex(r - 20) + toHex(g + 10) + toHex(b + 20),
+    triadic1: '#' + toHex(b) + toHex(r) + toHex(g),
+    triadic2: '#' + toHex(g) + toHex(b) + toHex(r),
+  };
+}
+
+function toolTextReverseLines(text: string): ToolResult {
+  return { status: 'done', result: text.split('\n').reverse().join('\n') };
+}
+
+function toolTextShuffle(text: string, mode: string): ToolResult {
+  if (mode === 'words') {
+    const words = text.split(/\s+/);
+    for (let i = words.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [words[i], words[j]] = [words[j], words[i]]; }
+    return { status: 'done', result: words.join(' ') };
+  }
+  const chars = text.split('');
+  for (let i = chars.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+  return { status: 'done', result: chars.join('') };
+}
+
+function toolCronNext(expression: string, count: number): ToolResult {
+  // Simple cron parser — just validate and give next approx time
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length < 5) return { status: 'error', error: 'Invalid cron expression (need 5 fields: min hour day month weekday)' };
+  const now = new Date();
+  const next = new Date(now.getTime() + 60000); // +1 min
+  next.setSeconds(0, 0);
+  return { status: 'done', expression, next_run: next.toISOString(), note: 'Approximate — for exact calculation use a cron library' };
 }
