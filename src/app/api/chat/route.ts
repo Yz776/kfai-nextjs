@@ -128,36 +128,62 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // Append the current user message (and persist it)
-  // If user attached images, prepend a note so the AI knows to call vision_analyze
   let userMessageContent = userText;
   if (imageAttachments.length > 0) {
     const imageList = imageAttachments.map((f) => `- ${f}`).join('\n');
     userMessageContent = `${userText}${userText ? '\n\n' : ''}[Image attached — call vision_analyze to see it:]\n${imageList}`;
   }
 
-  // ── SMART INTERCEPT: detect intent and inject tool hints ─────────────────────
-  // The model often doesn't use the right KFAI tools. If we detect the user is
-  // asking about time/weather/search/etc., we inject a hint telling the model
-  // EXACTLY which tool to call and with what args.
+  // ── SERVER-SIDE PRE-EXECUTION ────────────────────────────────────────────────
+  // The model (opencode/big-pickle) doesn't properly format tool call arguments.
+  // Instead of relying on the model to call tools, we DETECT intent from the
+  // user's message, EXECUTE the tools directly on the server, and INJECT the
+  // results as a system message. The model just needs to summarize the answer.
+  const toolCtx = { userId: auth.userId, authId: auth.authId };
+  const preExecResults: string[] = [];
   const lowerText = userText.toLowerCase();
-  const hints: string[] = [];
-  if (/(jam|time|waktu|pukul)/i.test(lowerText)) {
-    hints.push('IMPORTANT: Call the datetime tool with timezone="Asia/Jakarta" to get the current time.');
+
+  // Detect time question
+  if (/(jam|time|waktu|pukul|what time|saat ini)/i.test(lowerText)) {
+    const dt = await executeTool('datetime', { timezone: 'Asia/Jakarta' }, toolCtx);
+    preExecResults.push(`[datetime result: ${JSON.stringify(dt)}]`);
   }
-  if (/(cuaca|weather|suhu|hujan|panas)/i.test(lowerText)) {
-    // Extract location
-    const locMatch = userText.match(/(?:di|di\s|yang\s)?([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/);
-    const loc = locMatch ? locMatch[1] : 'Bandung';
-    hints.push(`IMPORTANT: Call the weather tool with location="${loc}" to get current weather.`);
+
+  // Detect weather question
+  if (/(cuaca|weather|suhu|hujan|panas|dingin|temperature)/i.test(lowerText)) {
+    // Extract location — look for capitalized words after "di" or at start
+    let location = 'Bandung';
+    const diMatch = userText.match(/di\s+([A-Z][a-z]+)/);
+    const capMatch = userText.match(/([A-Z][a-z]+)\s+(?:cuaca|sekarang|jam)/);
+    if (diMatch) location = diMatch[1];
+    else if (capMatch) location = capMatch[1];
+    const w = await executeTool('weather', { location }, toolCtx);
+    preExecResults.push(`[weather result for ${location}: ${JSON.stringify(w)}]`);
   }
-  if (/(cari|search|cari tahu|googling)/i.test(lowerText)) {
-    hints.push('IMPORTANT: Call the google_search tool with the search query.');
+
+  // Detect currency question
+  if (/(kurs|dollar|usd|idr|rupiah|convert|tukar)/i.test(lowerText)) {
+    const fromMatch = userText.match(/(\d+)\s*(?:usd|dollar|\$)/i);
+    const toMatch = userText.match(/(?:ke|to)\s*(idr|rupiah)/i);
+    if (fromMatch) {
+      const amount = Number(fromMatch[1]);
+      const cc = await executeTool('currency_convert', { amount, from: 'USD', to: 'IDR' }, toolCtx);
+      preExecResults.push(`[currency_convert ${amount} USD→IDR: ${JSON.stringify(cc)}]`);
+    }
   }
-  if (/(kurs|dollar|usd|idr|uang|convert)/i.test(lowerText)) {
-    hints.push('IMPORTANT: Call the currency_convert tool for exchange rates.');
+
+  // Detect search question
+  if (/(cari tahu|search|googling|google|berapa|bagaimana cara|apa itu|siapa)/i.test(lowerText) && preExecResults.length === 0) {
+    // Only auto-search if no other tool was triggered
+    const searchQuery = userText.replace(/[?!.]/g, '').trim().slice(0, 100);
+    const gs = await executeTool('google_search', { query: searchQuery }, toolCtx);
+    preExecResults.push(`[google_search result for "${searchQuery}": ${JSON.stringify(gs).slice(0, 1000)}]`);
   }
-  if (hints.length > 0) {
-    userMessageContent += '\n\n' + hints.join('\n');
+
+  // Inject pre-executed results into the user message
+  if (preExecResults.length > 0) {
+    userMessageContent += '\n\n' + preExecResults.join('\n\n') +
+      '\n\n[NOTE: Tools already executed. Use the results above to answer. DO NOT call websearch, webfetch, or bash — the data is already provided above.]';
   }
 
   const userMsg = await db.message.create({
